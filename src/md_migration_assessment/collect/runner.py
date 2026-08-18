@@ -126,6 +126,12 @@ def _classify(exc: Exception) -> str:
     return "unavailable" if _UNAVAILABLE_RE.search(str(exc)) else "failed"
 
 
+#: Columns stamped onto every raw row by the framework rather than produced
+#: by extract SQL. The handoff builder exempts exactly this set from its
+#: expected-column policy — keep the two in lockstep by sharing the constant.
+FRAMEWORK_COLUMNS = frozenset({"collection_id"})
+
+
 class _Ingestor:
     """Lands Arrow data in raw.<target>, stamping collection_id on every row."""
 

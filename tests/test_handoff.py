@@ -169,5 +169,56 @@ def test_projection_parser_reads_aliases_not_keywords():
     assert "varchar" not in cols     # type keyword must not leak into the allowlist
     assert "source_body" not in cols
 
-    with pytest.raises(ValueError, match="projection"):
+    with pytest.raises(ValueError, match="SELECT"):
         _projection_columns("-- no select here")
+
+    # commas inside function calls must not whitelist arguments
+    cols = _projection_columns("SELECT IFF(p, database_name, q) AS db, other FROM t")
+    assert cols == {"db", "other"}
+
+    # function-level FROM must not truncate the projection
+    cols = _projection_columns("SELECT EXTRACT(year FROM created) AS y, b FROM t")
+    assert cols == {"y", "b"}
+
+    # anything not bare-column or AS-aliased fails closed
+    with pytest.raises(ValueError, match="unparseable"):
+        _projection_columns("SELECT DISTINCT a FROM t")
+    with pytest.raises(ValueError, match="unparseable"):
+        _projection_columns("SELECT upper(a) FROM t")
+
+
+@pytest.mark.parametrize("bad", ["md:x", "MD:x", "Md:x", "motherduck:x", "MOTHERDUCK:x", "s3://b/x.duckdb", "duckdb://x"])
+def test_handoff_rejects_every_remote_scheme_spelling(assessed_db, tmp_path, bad):
+    """DuckDB resolves 'motherduck:' and case variants of 'md:' to the cloud;
+    the local-only rule is an allowlist (no scheme prefix), not a blocklist."""
+    with pytest.raises(ValueError, match="local file path"):
+        build_handoff(assessed_db, bad)
+    with pytest.raises(ValueError, match="local file path|existing local file"):
+        build_handoff(bad, str(tmp_path / "out.duckdb"))
+
+
+def test_handoff_refuses_raw_schema_version_skew(assessed_db, tmp_path):
+    """The expected-column allowlist comes from the installed extract SQL;
+    on version skew it would silently classify real columns as drift."""
+    con = duckdb.connect(assessed_db)
+    con.execute("UPDATE meta.collections SET raw_schema_version = 1")
+    con.close()
+    with pytest.raises(ValueError, match="raw schema"):
+        build_handoff(assessed_db, str(tmp_path / "h.duckdb"))
+
+
+def test_manifest_drop_partitions_are_disjoint(assessed_db, tmp_path):
+    con = duckdb.connect(assessed_db)
+    con.execute("ALTER TABLE raw.views ADD COLUMN injected VARCHAR")
+    con.close()
+    manifest = build_handoff(assessed_db, str(tmp_path / "h4.duckdb"))
+    for name, entry in manifest["tables"].items():
+        if not name.startswith("raw."):
+            continue
+        excluded = set(entry["excluded_columns"])
+        dropped = set(entry.get("dropped_unexpected", []))
+        kept = set(entry["unclassified_included"]) | {
+            c for cols in entry["sensitive_included"].values() for c in cols
+        }
+        assert not excluded & dropped, name
+        assert not (excluded | dropped) & kept, name

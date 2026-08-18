@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -24,6 +25,29 @@ from datetime import datetime, timezone
 import duckdb
 
 from . import META_SCHEMA_VERSION, RAW_SCHEMA_VERSION, __version__
+
+# Anything scheme-like: md:, MD:, motherduck:, s3://, duckdb://, http:, ...
+# DuckDB resolves several of these to remote systems (verified live:
+# connect('MD:x') and connect('motherduck:x') both reach MotherDuck), so the
+# only safe rule is an allowlist: a local path is one with NO scheme prefix.
+# Single-letter prefixes followed by a path separator are Windows drive
+# letters, not schemes.
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[/\\]")
+
+
+def require_local_path(path: str, context: str) -> None:
+    """The single definition of 'local file path' for every privacy-motivated
+    guard in this tool — collection output and handoff alike must not drift
+    apart on what counts as remote."""
+    p = path.strip()
+    if _SCHEME_RE.match(p) and not _DRIVE_RE.match(p):
+        raise ValueError(
+            f"{context} must be a plain local file path (got {path!r}); "
+            "sharing or uploading to MotherDuck or remote storage is a "
+            "separate, explicit upload operation"
+        )
+
 
 #: Extractor run statuses (spec §2). Values are stored as VARCHAR.
 STATUSES = ("complete", "partial", "unavailable", "failed", "not_requested")
@@ -97,11 +121,7 @@ def open_output(path: str) -> duckdb.DuckDBPyConnection:
     Local mode never touches MotherDuck: reject md: paths outright so a
     misconfiguration cannot silently turn a private collection into an upload.
     """
-    if path.startswith("md:"):
-        raise ValueError(
-            "local collection cannot write to a MotherDuck database; "
-            "use 'md-assess upload' to share an assessment explicitly"
-        )
+    require_local_path(path, "local collection output")
     # The 0600 guarantee must cover DuckDB's sidecar files too (<path>.wal,
     # temp files), and those are created lazily by later writes — a chmod of
     # the main file alone leaves a world-readable WAL behind after a crash.

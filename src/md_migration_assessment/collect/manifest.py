@@ -388,11 +388,14 @@ EXTRACTORS: list[Extractor] = [
         min_profile=Profile.STANDARD,
         account_usage_sql="shares.sql",
         info_schema_sql=None,
-        scope_columns={"database": "database_name"},
+        # deliberately unscoped: DATABASE_NAME is NULL for shares with no
+        # database granted yet, and a scope predicate would silently drop
+        # them — coalescing missing evidence into zero
         required_privilege="SNOWFLAKE.SECURITY_VIEWER or IMPORTED PRIVILEGES",
         sensitive_fields={
             "name": PrivacyClass.OBJECT_NAME,
             "database_name": PrivacyClass.OBJECT_NAME,
+            "listing_global_name": PrivacyClass.OBJECT_NAME,
             "owner": PrivacyClass.USER_IDENTITY,
             "target_accounts": PrivacyClass.USER_IDENTITY,
             "comment": PrivacyClass.COMMENT,

@@ -3,13 +3,16 @@
 Builds a separate database safe to share: meta coverage records, report.*
 facts, and raw evidence filtered by a **fail-closed column policy**:
 
-- columns classified SOURCE_BODY or QUERY_TEXT are removed;
-- columns not produced by the version-controlled extract SQL are removed
-  (schema drift or overridden extracts must never leak through a handoff);
+- a column travels only if the version-controlled extract SQL's SELECT
+  projection produces it (framework columns like collection_id excepted);
+- among those, columns classified SOURCE_BODY or QUERY_TEXT are removed;
+- anything else — drifted, injected, or from an overridden extract — is
+  dropped and reported as ``dropped_unexpected``;
 - raw tables with no manifest entry at all are skipped entirely.
 
 Included sensitive classes (object names, user identities, comments) and any
-kept-but-unclassified columns are disclosed in the returned manifest.
+kept-but-unclassified columns are disclosed in the returned manifest; the
+manifest's drop categories are disjoint.
 
 This is the enforcement point for the privacy classifications in the
 extractor manifest — the classes are behavior here, not documentation.
@@ -23,46 +26,91 @@ import re
 
 import duckdb
 
+from . import RAW_SCHEMA_VERSION
 from .collect.manifest import EXTRACTORS, Extractor, load_sql
+from .collect.runner import FRAMEWORK_COLUMNS
+from .db import require_local_path
 from .privacy import HANDOFF_EXCLUDED_CLASSES
 
-_ALIAS_RE = re.compile(r"\bAS\s+([A-Za-z_][A-Za-z0-9_$]*)\s*$", re.IGNORECASE)
-_PROJECTION_RE = re.compile(r"\bSELECT\b(.*?)\bFROM\b", re.IGNORECASE | re.DOTALL)
+_BARE_COLUMN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*$")
+_ALIASED_RE = re.compile(r".+\s+AS\s+([A-Za-z_][A-Za-z0-9_$]*)$", re.IGNORECASE | re.DOTALL)
+_SELECT_RE = re.compile(r"\bSELECT\b", re.IGNORECASE)
+_PAREN_OR_FROM_RE = re.compile(r"[()]|\bFROM\b", re.IGNORECASE)
 
 
 def _projection_columns(sql: str) -> set[str]:
-    """Output columns of an extract's SELECT projection.
+    """Output columns of an extract's SELECT projection — strictly parsed.
 
-    Tokenizing the whole file is not fail-closed: a word in a SQL *comment*
-    (e.g. views.sql mentioning 'source_body') would whitelist a drifted
-    column of that name. Only the projection list is authoritative. The
-    extract files are version-controlled and rigidly shaped (line comments,
-    one SELECT, one column per item, FROM) — anything unparseable is an
-    error, never a pass-through.
+    The allowlist must be exact: a word in a comment must not whitelist a
+    drifted column, a comma inside IFF(a, b, c) must not whitelist an
+    argument, and EXTRACT(x FROM y) must not truncate the projection. The
+    extract files are version-controlled and rigidly shaped — one SELECT,
+    each item either a bare column or an expression with an explicit
+    ``AS alias``. Anything else raises; a parse failure is never a
+    pass-through.
     """
     text = " ".join(line.split("--")[0] for line in sql.splitlines())
-    m = _PROJECTION_RE.search(text)
-    if not m:
-        raise ValueError("extract SQL has no parseable SELECT ... FROM projection")
-    cols: set[str] = set()
-    for item in m.group(1).split(","):
-        item = item.strip()
-        if not item:
-            continue
-        alias = _ALIAS_RE.search(item)
-        if alias:
-            cols.add(alias.group(1).lower())
+    sel = _SELECT_RE.search(text)
+    if not sel:
+        raise ValueError("extract SQL has no SELECT")
+    rest = text[sel.end():]
+
+    # find the top-level FROM, tracking parenthesis depth so function-level
+    # FROMs (EXTRACT(year FROM ts)) don't end the projection early
+    depth = 0
+    end = None
+    for m in _PAREN_OR_FROM_RE.finditer(rest):
+        tok = m.group(0)
+        if tok == "(":
+            depth += 1
+        elif tok == ")":
+            depth -= 1
+        elif depth == 0:
+            end = m.start()
+            break
+    if end is None:
+        raise ValueError("extract SQL has no top-level FROM")
+    projection = rest[:end]
+
+    # split on top-level commas only
+    items: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in projection:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            items.append("".join(buf))
+            buf = []
         else:
-            cols.add(item.split(".")[-1].strip('"').lower())
+            buf.append(ch)
+    items.append("".join(buf))
+
+    cols: set[str] = set()
+    for raw_item in items:
+        item = raw_item.strip()
+        if not item:
+            raise ValueError("empty projection item (dangling comma?)")
+        if _BARE_COLUMN_RE.fullmatch(item):
+            cols.add(item.lower())
+            continue
+        aliased = _ALIASED_RE.fullmatch(item)
+        if aliased:
+            cols.add(aliased.group(1).lower())
+            continue
+        raise ValueError(
+            f"unparseable projection item {item!r}: extract SQL must use "
+            "bare column names or explicit 'expr AS alias'"
+        )
+    if not cols:
+        raise ValueError("extract SQL projection produced no columns")
     return cols
 
 
 def _expected_columns(ex: Extractor) -> set[str]:
-    """Output columns the extractor's version-controlled SQL can produce.
-
-    Any actual raw column outside this set cannot have been produced by the
-    shipped extract — treat it as drift and drop it from the handoff.
-    """
+    """Output columns the extractor's version-controlled SQL can produce."""
     cols: set[str] = set()
     for kind, fname in (
         ("account_usage", ex.account_usage_sql),
@@ -96,12 +144,10 @@ def _tables(con: duckdb.DuckDBPyConnection, schema: str) -> list[str]:
 
 def build_handoff(source_path: str, dest_path: str) -> dict:
     """Build the sanitized handoff database. Returns its manifest."""
-    for label, p in (("source", source_path), ("destination", dest_path)):
-        if p.startswith("md:") or "://" in p:
-            raise ValueError(
-                f"handoff {label} must be a local file path — sharing to "
-                "MotherDuck is a separate, explicit upload operation"
-            )
+    require_local_path(source_path, "handoff source")
+    require_local_path(dest_path, "handoff destination")
+    if not os.path.isfile(source_path):
+        raise ValueError(f"handoff source is not an existing local file: {source_path}")
     if os.path.exists(dest_path):
         raise ValueError(f"refusing to overwrite existing file {dest_path}")
     os.umask(0o077)
@@ -116,6 +162,20 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
         src = source_path.replace("'", "''")
         con.execute(f"ATTACH '{src}' AS handoff_src (READ_ONLY)")
         con.execute("USE handoff_src")  # information_schema lookups read the source
+
+        # The expected-column allowlist comes from the *installed* extract
+        # SQL; on version skew it would silently misclassify legitimately
+        # collected columns as drift. Refuse loudly, like build_report.
+        for cid, raw_version in con.execute(
+            "SELECT collection_id, raw_schema_version FROM meta.collections"
+        ).fetchall():
+            if raw_version != RAW_SCHEMA_VERSION:
+                raise ValueError(
+                    f"collection {cid} has raw schema v{raw_version}; this tool "
+                    f"builds handoffs for v{RAW_SCHEMA_VERSION}. Re-collect with "
+                    "the current version."
+                )
+
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".meta')
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".raw')
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".report')
@@ -146,17 +206,22 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
             actual = _columns(con, "raw", table)
             actual_lower = {c.lower() for c in actual}
             expected = _expected_columns(ex)
+
+            # Disjoint partitions of the actual columns:
+            #   dropped_unexpected — not produced by the shipped extract SQL
+            #   excluded           — produced, but classified source-body/query-text
+            #   keep               — everything else, plus framework columns
+            dropped_unexpected = sorted(
+                actual_lower - expected - FRAMEWORK_COLUMNS
+            )
             excluded = sorted(
                 col
                 for col, cls in ex.sensitive_fields.items()
-                if cls in HANDOFF_EXCLUDED_CLASSES and col in actual_lower
+                if cls in HANDOFF_EXCLUDED_CLASSES
+                and col in actual_lower
+                and col in expected
             )
-            dropped_unexpected = sorted(
-                c.lower()
-                for c in actual
-                if c.lower() not in expected and c.lower() != "collection_id"
-            )
-            drop = set(excluded) | set(dropped_unexpected)
+            drop = set(dropped_unexpected) | set(excluded)
             keep = [c for c in actual if c.lower() not in drop]
             col_list = ", ".join(f'"{c}"' for c in keep)
             con.execute(
@@ -171,7 +236,8 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
             unclassified = sorted(
                 c.lower()
                 for c in keep
-                if c.lower() not in ex.sensitive_fields and c.lower() != "collection_id"
+                if c.lower() not in ex.sensitive_fields
+                and c.lower() not in FRAMEWORK_COLUMNS
             )
             manifest["tables"][f"raw.{table}"] = {
                 "rows": rows,

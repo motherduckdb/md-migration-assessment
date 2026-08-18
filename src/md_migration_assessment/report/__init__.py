@@ -151,6 +151,7 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
 
 
 _SIZING_DDL = """
+CREATE SCHEMA IF NOT EXISTS report;
 DROP TABLE IF EXISTS report.sizing;
 CREATE TABLE report.sizing (
     collection_id UUID, table_catalog VARCHAR, table_schema VARCHAR,
@@ -187,10 +188,11 @@ def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
             "AND s.table_name = t.table_name"
         )
     con.execute(f"""
-        INSERT INTO report.sizing
+        INSERT INTO report.sizing BY NAME
         SELECT
-            t.collection_id,
-            t.table_catalog, t.table_schema, t.table_name, t.table_type,
+            t.collection_id AS collection_id,
+            t.table_catalog AS table_catalog, t.table_schema AS table_schema,
+            t.table_name AS table_name, t.table_type AS table_type,
             t.row_count::BIGINT AS row_count,
             t.bytes::BIGINT AS bytes,
             {storage_cols},
