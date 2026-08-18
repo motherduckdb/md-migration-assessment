@@ -75,6 +75,21 @@ def test_lite_profile(tmp_path, source):
         "SELECT count(*) FROM raw.tables WHERE table_catalog = 'MDA_TEST_MAIN'"
     ).fetchone()[0]
     assert n >= 3
+    # M3a seed fixtures with lag-free INFORMATION_SCHEMA visibility: assert
+    # the exact seeded objects, so pre-existing unrelated objects cannot mask
+    # a broken seed statement (review 2026-08-18)
+    n_vec = con.execute(
+        "SELECT count(*) FROM raw.columns WHERE table_catalog = 'MDA_TEST_MAIN' "
+        "AND table_schema = 'ANALYTICS' AND table_name = 'EMBEDDINGS' "
+        "AND column_name = 'EMB' AND data_type LIKE 'VECTOR%'"
+    ).fetchone()[0]
+    assert n_vec == 1, "seeded EMBEDDINGS.EMB VECTOR column missing"
+    assert runs["external_tables"]["status"] == "complete"
+    n_ext = con.execute(
+        "SELECT count(*) FROM raw.external_tables WHERE table_catalog = 'MDA_TEST_MAIN' "
+        "AND table_schema = 'ANALYTICS' AND table_name = 'EXT_TIPS'"
+    ).fetchone()[0]
+    assert n_ext == 1, "seeded EXT_TIPS external table missing"
     # sensitive source bodies landed (needed for dialect assessment)
     vd = con.execute(
         "SELECT view_definition FROM raw.views "
@@ -120,6 +135,41 @@ def test_standard_profile(tmp_path, source):
     observed = [f"  {f[0]}={f[2]}" for f in feats if f[1] == "observed"]
     print("features observed live:")
     print("\n".join(observed) or "  (none yet — ACCOUNT_USAGE lag)")
+
+    # Deterministic fixtures on the seeded Enterprise trial account: these
+    # signals are lag-free (SHOW / INFORMATION_SCHEMA) or long-settled in
+    # ACCOUNT_USAGE. A broken seed statement must fail this test.
+    observed_names = {f[0] for f in feats if f[1] == "observed"}
+    expected = {
+        "streams", "warehouses", "multi_cluster_warehouses", "streamlit_apps",
+        "external_tables", "snowpipes", "scheduled_tasks", "dynamic_tables",
+        "transient_tables", "secure_views",
+    }
+    missing = expected - observed_names
+    assert not missing, f"expected seeded signals not observed: {missing}"
+
+    # ...and the named raw fixtures behind them, so unrelated account objects
+    # cannot mask a broken seed statement
+    named_fixtures = [
+        ("raw.streams", "name = 'ORDERS_STREAM' AND database_name = 'MDA_TEST_MAIN' "
+         "AND schema_name = 'SALES'"),
+        ("raw.warehouses", "name = 'MDA_MULTI_WH' AND "
+         "coalesce(try_cast(max_cluster_count::VARCHAR AS INTEGER), 1) >= 2"),
+        ("raw.streamlit_apps", "name = 'SALES_APP' AND database_name = 'MDA_TEST_MAIN' "
+         "AND schema_name = 'ANALYTICS'"),
+        ("raw.external_tables", "table_name = 'EXT_TIPS' AND "
+         "table_catalog = 'MDA_TEST_MAIN' AND table_schema = 'ANALYTICS'"),
+        ("raw.pipes", "pipe_name = 'LOAD_PIPE' AND pipe_catalog = 'MDA_TEST_MAIN' "
+         "AND pipe_schema = 'SALES'"),
+        ("raw.tasks", "task_name = 'DAILY_ROLLUP' AND task_database = 'MDA_TEST_MAIN' "
+         "AND task_schema = 'SALES'"),
+        ("raw.tables", "table_name = 'ORDERS_DYNAMIC' AND "
+         "table_catalog = 'MDA_TEST_MAIN' AND table_schema = 'ANALYTICS' AND "
+         "upper(coalesce(is_dynamic::VARCHAR, 'NO')) IN ('YES', 'TRUE', 'Y')"),
+    ]
+    for table, predicate in named_fixtures:
+        n = con.execute(f"SELECT count(*) FROM {table} WHERE {predicate}").fetchone()[0]
+        assert n >= 1, f"named seed fixture missing: {table} WHERE {predicate}"
     con.close()
 
 

@@ -8,8 +8,13 @@ ACCOUNTADMIN on a trial):
 
 Statements are a Python list (not a .sql file) because UDF/procedure bodies
 contain semicolons and $$-quoting that naive statement splitting mangles.
-Each statement runs independently; failures are collected and reported, not
-fatal — e.g. materialized views fail on Standard-edition trials, which is fine.
+Each statement runs independently. Statements matching OPTIONAL below are
+allowed to fail (edition-dependent features on Standard-edition accounts);
+any other failure makes the seed exit non-zero, so a broken fixture cannot
+silently pass the live suite.
+
+NOTE: the search-optimization statement starts background index maintenance
+that consumes credits and persists until DROPped with the table.
 
 Note: ACCOUNT_USAGE views lag by ~45min-2h. INFORMATION_SCHEMA (lite profile)
 sees these objects immediately; run the standard profile after the lag.
@@ -17,9 +22,64 @@ sees these objects immediately; run the standard profile after the lag.
 
 from __future__ import annotations
 
+import re
 import sys
 
 from md_migration_assessment.collect.snowflake import SnowflakeConfig
+
+#: Edition-dependent statements: statement-substring -> (reason, error regex).
+#: A failure is optional ONLY when the statement is a candidate AND its error
+#: positively matches that candidate's edition-unavailability shape — the
+#: generic "Unsupported feature" wording alone is NOT edition-specific in
+#: Snowflake (it also covers invalid combinations and operational
+#: restrictions), so each candidate whitelists the exact feature token, plus
+#: the explicitly edition-worded variants.
+_EE = r"(?:enterprise|higher) edition"
+
+
+def _uf(tokens: str) -> str:
+    """Exact unsupported-feature error shape: the token must be terminated by
+    its closing quote — 'ROW ACCESS POLICY ON EXTERNAL TABLE' must NOT match
+    the ROW ACCESS POLICY candidate (that is an operational restriction, not
+    an edition gap)."""
+    return rf"unsupported feature\s*'(?:{tokens})'"
+
+
+EDITION_DEPENDENT: dict[str, tuple[str, str]] = {
+    "MATERIALIZED VIEW": (
+        "requires Enterprise edition",
+        rf"{_uf('materialized view')}|{_EE}",
+    ),
+    "MASKING POLICY": (
+        "requires Enterprise edition",
+        rf"{_uf('column security|masking policy')}|{_EE}",
+    ),
+    "ROW ACCESS POLICY": (
+        "requires Enterprise edition",
+        rf"{_uf('row access policy')}|{_EE}",
+    ),
+    "TAG ": (
+        "object tagging requires Enterprise edition",
+        rf"{_uf('tag')}|{_EE}",
+    ),
+    "MDA_MULTI_WH": (
+        # no reliable feature token: only explicit edition wording is accepted
+        "multi-cluster warehouses require Enterprise edition",
+        _EE,
+    ),
+    "SEARCH OPTIMIZATION": (
+        "requires Enterprise edition (and consumes credits)",
+        rf"{_uf('search optimization')}|{_EE}",
+    ),
+}
+
+
+def _optional_reason(stmt: str, error: str) -> str | None:
+    for key, (reason, pattern) in EDITION_DEPENDENT.items():
+        if key in stmt and re.search(pattern, error, re.IGNORECASE):
+            return reason
+    return None
+
 
 DB1 = "MDA_TEST_MAIN"
 DB2 = "MDA_TEST_SECOND"
@@ -148,6 +208,34 @@ STATEMENTS: list[str] = [
     COPY INTO {DB1}.ANALYTICS.SCRATCH FROM @{DB1}.SALES.LOAD_STAGE
     FILE_FORMAT = (TYPE = 'CSV')
     """,
+    # ── M3a feature objects ─────────────────────────────────────────────
+    f"""
+    CREATE WAREHOUSE IF NOT EXISTS MDA_MULTI_WH
+    WAREHOUSE_SIZE = 'XSMALL' MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 2
+    AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE
+    """,
+    # IF NOT EXISTS reports success without converging properties on an
+    # existing warehouse — the ALTER makes the multi-cluster fixture real
+    f"ALTER WAREHOUSE MDA_MULTI_WH SET MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 2",
+    f"""
+    CREATE OR REPLACE TABLE {DB1}.ANALYTICS.EMBEDDINGS (
+        id INT, emb VECTOR(FLOAT, 768)
+    )
+    """,
+    f"ALTER TABLE {DB1}.SALES.EVENTS ADD SEARCH OPTIMIZATION",
+    # public tutorial bucket; a failure here means the bucket or network
+    # path changed and the fixture needs a new source — required on purpose
+    f"""
+    CREATE STAGE IF NOT EXISTS {DB1}.ANALYTICS.EXT_STAGE
+    URL = 's3://ocient-examples/metabase_samples/parquet/'
+    """,
+    f"""
+    CREATE OR REPLACE EXTERNAL TABLE {DB1}.ANALYTICS.EXT_TIPS
+    LOCATION = @{DB1}.ANALYTICS.EXT_STAGE
+    PATTERN = '.*tips.parquet'
+    FILE_FORMAT = (TYPE = PARQUET)
+    AUTO_REFRESH = FALSE
+    """,
     f"CREATE SHARE IF NOT EXISTS MDA_TEST_SHARE",
     f"GRANT USAGE ON DATABASE {DB1} TO SHARE MDA_TEST_SHARE",
     f"GRANT USAGE ON SCHEMA {DB1}.ANALYTICS TO SHARE MDA_TEST_SHARE",
@@ -161,15 +249,61 @@ STATEMENTS: list[str] = [
 ]
 
 
+def _run_all(cur, statements, required_failures, optional_failures) -> None:
+    for stmt in statements:
+        label = " ".join(stmt.split())[:80]
+        try:
+            cur.execute(stmt)
+            print(f"ok    {label}")
+        except Exception as exc:  # noqa: BLE001
+            err = str(exc).splitlines()[0]
+            reason = _optional_reason(stmt, err)
+            if reason:
+                optional_failures.append((label, err, reason))
+                print(f"skip  {label}")
+            else:
+                required_failures.append((label, err))
+                print(f"FAIL  {label}")
+
+
 def main() -> int:
     import snowflake.connector
 
     cfg = SnowflakeConfig.from_env()
     conn = snowflake.connector.connect(**cfg.connect_kwargs())
-    cur = conn.cursor()
+    cleanups: list = []
+    required_failures: list[tuple[str, str]] = []
+    optional_failures: list[tuple[str, str, str]] = []
+    try:
+        cur = conn.cursor()
+        user = cur.execute("SELECT current_user()").fetchone()[0]
+        warehouse = cfg.warehouse
+        statements = _build_statements(user, warehouse, cleanups)
+        _run_all(cur, statements, required_failures, optional_failures)
+    finally:
+        try:
+            for cleanup in cleanups:
+                try:
+                    cleanup()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"cleanup failed (continuing): {exc}")
+        finally:
+            conn.close()
 
-    user = cur.execute("SELECT current_user()").fetchone()[0]
-    warehouse = cfg.warehouse
+    ok = len(statements) - len(required_failures) - len(optional_failures)
+    print(f"\n{ok}/{len(statements)} statements succeeded")
+    for label, err, reason in optional_failures:
+        print(f"  optional ({reason}): {label}\n    -> {err}")
+    for label, err in required_failures:
+        print(f"  REQUIRED FAILURE: {label}\n    -> {err}")
+    print(
+        "\nINFORMATION_SCHEMA sees these objects immediately (lite profile).\n"
+        "ACCOUNT_USAGE lags ~45min-2h; run the standard profile after that."
+    )
+    return 1 if required_failures else 0
+
+
+def _build_statements(user: str, warehouse: str | None, cleanups: list) -> list[str]:
     statements = list(STATEMENTS)
     statements.append(f'GRANT ROLE {LOWPRIV_ROLE} TO USER "{user}"')
     if warehouse:
@@ -185,28 +319,27 @@ def main() -> int:
             WAREHOUSE = {warehouse} SCHEDULE = '1440 MINUTE' AS
             SELECT count(*) FROM {DB1}.SALES.ORDERS
         """)
+        # stage a real main file first: Streamlit requires MAIN_FILE to
+        # exist in ROOT_LOCATION, so the fixture must be deterministic
+        import pathlib
+        import tempfile
 
-    failures: list[tuple[str, str]] = []
-    for stmt in statements:
-        label = " ".join(stmt.split())[:80]
-        try:
-            cur.execute(stmt)
-            print(f"ok    {label}")
-        except Exception as exc:  # noqa: BLE001
-            failures.append((label, str(exc).splitlines()[0]))
-            print(f"FAIL  {label}")
+        tmpdir = tempfile.TemporaryDirectory()
+        cleanups.append(tmpdir.cleanup)
+        app = pathlib.Path(tmpdir.name) / "app.py"
+        app.write_text("import streamlit as st\nst.title('MDA seed fixture')\n")
+        statements.append(
+            f"PUT file://{app} @{DB1}.SALES.LOAD_STAGE "
+            "AUTO_COMPRESS = FALSE OVERWRITE = TRUE"
+        )
+        statements.append(f"""
+            CREATE STREAMLIT IF NOT EXISTS {DB1}.ANALYTICS.SALES_APP
+            ROOT_LOCATION = '@{DB1}.SALES.LOAD_STAGE'
+            MAIN_FILE = 'app.py'
+            QUERY_WAREHOUSE = {warehouse}
+        """)
 
-    conn.close()
-    print(f"\n{len(statements) - len(failures)}/{len(statements)} statements succeeded")
-    if failures:
-        print("\nFailures (materialized view is expected to fail on Standard edition):")
-        for label, err in failures:
-            print(f"  {label}\n    -> {err}")
-    print(
-        "\nINFORMATION_SCHEMA sees these objects immediately (lite profile).\n"
-        "ACCOUNT_USAGE lags ~45min-2h; run the standard profile after that."
-    )
-    return 0
+    return statements
 
 
 if __name__ == "__main__":
