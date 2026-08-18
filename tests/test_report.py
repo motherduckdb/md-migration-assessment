@@ -6,7 +6,7 @@ import pytest
 
 from conftest import NOT_AUTHORIZED, FakeSource
 
-from fixtures import REALISTIC
+from fixtures import REALISTIC, REALISTIC_SHOW
 
 from md_migration_assessment.collect.manifest import Profile
 from md_migration_assessment.collect.runner import run_collection
@@ -32,7 +32,9 @@ def collect_and_report(out_db, source, profile=Profile.STANDARD):
 def realistic_source(**overrides):
     au = dict(REALISTIC)
     au.update(overrides)
-    return FakeSource(account_usage=au, databases=["APPDB"])
+    return FakeSource(
+        account_usage=au, databases=["APPDB"], show_data=dict(REALISTIC_SHOW)
+    )
 
 
 def test_every_signal_has_a_row(out_db):
@@ -68,7 +70,7 @@ def test_every_signal_has_a_row(out_db):
         ("java_scala_udfs", 1, "F_EXT"),
         ("external_functions", 1, "F_EXT"),
         ("snowpark_udfs", 1, "F_PY"),
-        ("stored_procedures", 3, "P_SQL"),
+        ("stored_procedures", 4, "P_SQL"),
         ("javascript_procedures", 1, "P_JS"),
         ("python_procedures", 1, "P_PY"),
         ("secure_views", 1, "V_SECURE"),
@@ -81,6 +83,20 @@ def test_every_signal_has_a_row(out_db):
         ("custom_roles", 1, "ANALYST"),
         ("snowpipes", 2, "LOAD_EVENTS"),
         ("outbound_shares", 1, "OUT_SHARE"),
+        ("external_tables", 1, "EXT_EVENTS"),
+        ("cursors_in_procedures", 1, "P_CURSOR"),
+        ("streams", 1, "ORDERS_STREAM"),
+        ("warehouses", 2, "ETL_WH"),
+        ("multi_cluster_warehouses", 1, "ETL_WH"),
+        ("streamlit_apps", 1, "SALES_DASH"),
+        ("notebooks", 1, "EDA_NOTEBOOK"),
+        ("native_apps", 1, "PARTNER_APP"),
+        ("native_app_packages", 1, "MY_PKG"),
+        ("catalog_integrations", 1, "GLUE_CAT"),
+        ("inbound_shares", 1, "PARTNERORG.SHARE1"),
+        ("cortex_ai_usage", 1, "COMPLETE"),
+        ("search_optimization", 1, "PLAIN"),
+        ("snowpipe_streaming", 1, "KAFKA_CONNECTOR_1"),
         ("listings", 1, "PARTNER_SHARE"),
         ("scheduled_tasks", 1, "NIGHTLY_ROLLUP"),
         ("external_stages", 1, "S3_LANDING"),

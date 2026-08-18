@@ -33,9 +33,11 @@ class FakeSource:
         account_usage: dict | None = None,
         info_schema: dict | None = None,
         databases: list[str] | None = None,
+        show_data: dict | None = None,
     ) -> None:
         self.account_usage = account_usage or {}
         self.info_schema = info_schema or {}
+        self.show_data = show_data or {}
         self.databases = databases if databases is not None else ["DB1", "DB2"]
         self.queries: list[str] = []
 
@@ -65,6 +67,19 @@ class FakeSource:
                 raise result
             return result
         raise AssertionError(f"FakeSource got unrecognized SQL: {sql}")
+
+    def show(self, command: str):
+        self.queries.append(command)
+        from md_migration_assessment.collect.manifest import EXTRACTORS
+
+        by_cmd = {e.show_sql: e.name for e in EXTRACTORS if e.show_sql}
+        name = by_cmd.get(command, command)
+        entry = self.show_data.get(name, small_table())
+        if isinstance(entry, Exception):
+            raise entry
+        if isinstance(entry, tuple):
+            return entry
+        return entry, False
 
     def list_databases(self) -> list[str]:
         return list(self.databases)

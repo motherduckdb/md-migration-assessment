@@ -34,6 +34,21 @@ def as_record_batches(
 EXCLUDED_DATABASES = {"SNOWFLAKE", "SNOWFLAKE_SAMPLE_DATA"}
 
 
+def ensure_typed(table: pa.Table) -> pa.Table:
+    """Replace null-typed columns with string columns.
+
+    An empty (or all-NULL) SHOW result makes Arrow infer the null type, which
+    DuckDB then binds as a non-text column and string predicates in report
+    probes fail (found live: SHOW STREAMLITS with zero rows)."""
+    if not any(pa.types.is_null(f.type) for f in table.schema):
+        return table
+    fields = [
+        pa.field(f.name, pa.string()) if pa.types.is_null(f.type) else f
+        for f in table.schema
+    ]
+    return table.cast(pa.schema(fields))
+
+
 @dataclass
 class SnowflakeConfig:
     account: str
@@ -127,6 +142,32 @@ class SnowflakeSource:
         return pa.RecordBatchReader.from_batches(
             first.schema, as_record_batches(chain([first], batches))
         )
+
+    def show(self, command: str) -> tuple[pa.Table, bool]:
+        """Run a SHOW command; returns (arrow table, truncated?).
+
+        SHOW output is not fetchable as Arrow, so rows are materialized and
+        converted; SHOW caps output at 10,000 rows, and hitting the cap is
+        reported so the runner can record partial coverage instead of
+        presenting a truncated inventory as complete.
+        """
+        cur = self._conn.cursor()
+        cur.execute(command)
+        rows = cur.fetchall()
+        names = [d[0] for d in cur.description]
+        columns = {name: [row[i] for row in rows] for i, name in enumerate(names)}
+        try:
+            table = pa.table(columns)
+        except (pa.ArrowInvalid, pa.ArrowTypeError):
+            # mixed types the inference can't unify: stringify (evidence
+            # fidelity beats a failed extract)
+            table = pa.table(
+                {
+                    name: [None if v is None else str(v) for v in vals]
+                    for name, vals in columns.items()
+                }
+            )
+        return ensure_typed(table), len(rows) >= 10_000
 
     def list_databases(self) -> list[str]:
         cur = self._conn.cursor()

@@ -58,6 +58,12 @@ class Extractor:
     sensitive_fields: dict[str, PrivacyClass] = field(default_factory=dict)
     #: for time-windowed extracts: default lookback, substituted as {window_days}.
     window_days: int | None = None
+    #: SHOW-command source (e.g. "SHOW STREAMS IN ACCOUNT"). SHOW output is
+    #: account-wide and cannot be scope-filtered; columns are server-defined.
+    show_sql: str | None = None
+    #: for SHOW extracts: the explicit column allowlist the handoff builder
+    #: uses (SELECT extracts derive theirs from the SQL projection instead).
+    expected_show_columns: tuple[str, ...] = ()
 
     @property
     def target_table(self) -> str:
@@ -77,6 +83,9 @@ def extractor_version(ex: Extractor) -> str:
         h.update(load_sql("account_usage", ex.account_usage_sql).encode())
     if ex.info_schema_sql:
         h.update(load_sql("information_schema", ex.info_schema_sql).encode())
+    if ex.show_sql:
+        h.update(ex.show_sql.encode())
+        h.update(",".join(ex.expected_show_columns).encode())
     return h.hexdigest()[:12]
 
 
@@ -398,6 +407,226 @@ EXTRACTORS: list[Extractor] = [
             "listing_global_name": PrivacyClass.OBJECT_NAME,
             "owner": PrivacyClass.USER_IDENTITY,
             "target_accounts": PrivacyClass.USER_IDENTITY,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    # ── M3a: completing the feature inventory ──────────────────────────
+    Extractor(
+        name="external_tables",
+        category="features",
+        min_profile=Profile.LITE,
+        account_usage_sql=None,
+        info_schema_sql="external_tables.sql",
+        scope_columns=dict(_CATALOG_SCOPE),
+        required_privilege="any role (objects visible to the role)",
+        sensitive_fields={
+            "table_catalog": PrivacyClass.OBJECT_NAME,
+            "table_schema": PrivacyClass.OBJECT_NAME,
+            "table_name": PrivacyClass.OBJECT_NAME,
+            "table_owner": PrivacyClass.USER_IDENTITY,
+            "location": PrivacyClass.OBJECT_NAME,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="cortex_ai_functions_usage_history",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql="cortex_ai_functions_usage_history.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=90,
+        sensitive_fields={"function_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="search_optimization_history",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql="search_optimization_history.sql",
+        info_schema_sql=None,
+        scope_columns={"database": "database_name", "schema": "schema_name"},
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        min_edition="ENTERPRISE",
+        window_days=90,
+        sensitive_fields={
+            "database_name": PrivacyClass.OBJECT_NAME,
+            "schema_name": PrivacyClass.OBJECT_NAME,
+            "table_name": PrivacyClass.OBJECT_NAME,
+        },
+    ),
+    Extractor(
+        name="snowpipe_streaming_client_history",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql="snowpipe_streaming_client_history.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=90,
+        sensitive_fields={"client_name": PrivacyClass.OBJECT_NAME},
+    ),
+    # SHOW-command extracts: account-wide, columns are server-defined; the
+    # expected_show_columns allowlist is what survives into a handoff.
+    Extractor(
+        name="streams",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        scope_columns={"database": "database_name", "schema": "schema_name"},
+        show_sql="SHOW STREAMS IN ACCOUNT",
+        expected_show_columns=(
+            "created_on", "name", "database_name", "schema_name", "owner",
+            "comment", "table_name", "source_type", "base_tables", "type",
+            "stale", "mode",
+        ),
+        required_privilege="any role (objects visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "database_name": PrivacyClass.OBJECT_NAME,
+            "schema_name": PrivacyClass.OBJECT_NAME,
+            "table_name": PrivacyClass.OBJECT_NAME,
+            "base_tables": PrivacyClass.OBJECT_NAME,
+            "owner": PrivacyClass.USER_IDENTITY,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="warehouses",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        show_sql="SHOW WAREHOUSES",
+        expected_show_columns=(
+            "created_on", "name", "state", "type", "size",
+            "min_cluster_count", "max_cluster_count", "auto_suspend",
+            "auto_resume", "scaling_policy", "enable_query_acceleration",
+            "query_acceleration_max_scale_factor", "resource_monitor",
+            "generation", "resource_constraint", "owner", "comment",
+        ),
+        required_privilege="any role (warehouses visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "owner": PrivacyClass.USER_IDENTITY,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="streamlit_apps",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        scope_columns={"database": "database_name", "schema": "schema_name"},
+        show_sql="SHOW STREAMLITS IN ACCOUNT",
+        expected_show_columns=(
+            "created_on", "name", "database_name", "schema_name", "title",
+            "owner", "query_warehouse", "comment",
+        ),
+        required_privilege="any role (objects visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "database_name": PrivacyClass.OBJECT_NAME,
+            "schema_name": PrivacyClass.OBJECT_NAME,
+            "title": PrivacyClass.COMMENT,
+            "owner": PrivacyClass.USER_IDENTITY,
+            "query_warehouse": PrivacyClass.OBJECT_NAME,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="notebooks",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        scope_columns={"database": "database_name", "schema": "schema_name"},
+        show_sql="SHOW NOTEBOOKS IN ACCOUNT",
+        expected_show_columns=(
+            "created_on", "name", "database_name", "schema_name", "owner",
+            "query_warehouse", "comment",
+        ),
+        required_privilege="any role (objects visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "database_name": PrivacyClass.OBJECT_NAME,
+            "schema_name": PrivacyClass.OBJECT_NAME,
+            "owner": PrivacyClass.USER_IDENTITY,
+            "query_warehouse": PrivacyClass.OBJECT_NAME,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="applications",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        show_sql="SHOW APPLICATIONS",
+        expected_show_columns=(
+            "created_on", "name", "source_type", "source", "owner",
+            "version", "label", "comment",
+        ),
+        required_privilege="any role (objects visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "source": PrivacyClass.OBJECT_NAME,
+            "owner": PrivacyClass.USER_IDENTITY,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="application_packages",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        show_sql="SHOW APPLICATION PACKAGES",
+        expected_show_columns=(
+            "created_on", "name", "distribution", "owner", "comment",
+        ),
+        required_privilege="any role (objects visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "owner": PrivacyClass.USER_IDENTITY,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="catalog_integrations",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        show_sql="SHOW CATALOG INTEGRATIONS",
+        expected_show_columns=(
+            "created_on", "name", "type", "category", "enabled", "comment",
+        ),
+        required_privilege="any role (integrations visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "comment": PrivacyClass.COMMENT,
+        },
+    ),
+    Extractor(
+        name="show_shares",
+        category="features",
+        min_profile=Profile.STANDARD,
+        account_usage_sql=None,
+        info_schema_sql=None,
+        scope_columns={"database": "database_name"},
+        show_sql="SHOW SHARES",
+        expected_show_columns=(
+            "created_on", "kind", "owner_account", "name", "database_name",
+            "owner", "comment", "listing_global_name", "secure_objects_only",
+        ),
+        required_privilege="any role (shares visible to the role)",
+        sensitive_fields={
+            "name": PrivacyClass.OBJECT_NAME,
+            "database_name": PrivacyClass.OBJECT_NAME,
+            "listing_global_name": PrivacyClass.OBJECT_NAME,
+            "owner": PrivacyClass.USER_IDENTITY,
+            "owner_account": PrivacyClass.USER_IDENTITY,
             "comment": PrivacyClass.COMMENT,
         },
     ),

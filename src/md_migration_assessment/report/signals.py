@@ -187,6 +187,49 @@ SIGNALS: list[Signal] = [
            "true", "name"),
     _probe("outbound_shares", "platform", "shares",
            "true", "name"),
+    # ── M3a: inventory completed ────────────────────────────────────
+    _probe("external_tables", "table_layout", "external_tables",
+           "true", _TBL, catalog_col="table_catalog"),
+    _probe("cursors_in_procedures", "code", "procedures",
+           "procedure_definition IS NOT NULL AND "
+           "regexp_matches(upper(procedure_definition), '\\bCURSOR\\b')",
+           _PROC, catalog_col="procedure_catalog"),
+    _probe("streams", "platform", "streams",
+           "true", "database_name || '.' || schema_name || '.' || name",
+           catalog_col="database_name"),
+    # SYSTEM$ warehouses are Snowflake-managed furniture
+    _probe("warehouses", "platform", "warehouses",
+           "name NOT LIKE 'SYSTEM$%'", "name"),
+    _probe("multi_cluster_warehouses", "platform", "warehouses",
+           "name NOT LIKE 'SYSTEM$%' AND "
+           "coalesce(try_cast(max_cluster_count::VARCHAR AS INTEGER), 1) > 1",
+           "name"),
+    _probe("streamlit_apps", "platform", "streamlit_apps",
+           "true", "database_name || '.' || schema_name || '.' || name",
+           catalog_col="database_name"),
+    _probe("notebooks", "platform", "notebooks",
+           "true", "database_name || '.' || schema_name || '.' || name",
+           catalog_col="database_name"),
+    # the SNOWFLAKE application is preinstalled account furniture
+    _probe("native_apps", "platform", "applications",
+           "upper(name) <> 'SNOWFLAKE'", "name"),
+    _probe("native_app_packages", "platform", "application_packages",
+           "true", "name"),
+    _probe("catalog_integrations", "platform", "catalog_integrations",
+           "true", "name"),
+    # SNOWFLAKE/SNOWFLAKE_SAMPLE_DATA inbound shares exist in every account
+    _probe("inbound_shares", "platform", "show_shares",
+           "upper(coalesce(kind, '')) = 'INBOUND' AND "
+           "coalesce(database_name, '') NOT IN ('SNOWFLAKE', 'SNOWFLAKE_SAMPLE_DATA')",
+           "name"),
+    _probe("cortex_ai_usage", "platform", "cortex_ai_functions_usage_history",
+           "true", "function_name || coalesce('/' || model_name, '')"),
+    _probe("search_optimization", "table_layout", "search_optimization_history",
+           "true",
+           "database_name || '.' || schema_name || '.' || table_name",
+           catalog_col="database_name"),
+    _probe("snowpipe_streaming", "platform", "snowpipe_streaming_client_history",
+           "true", "client_name"),
 ]
 
 
@@ -206,28 +249,7 @@ class PlannedSignal:
 
 
 PLANNED_SIGNALS: list[PlannedSignal] = [
-    PlannedSignal("streams", "platform",
-                  "no ACCOUNT_USAGE view; needs SHOW STREAMS IN ACCOUNT"),
-    PlannedSignal("inbound_shares", "platform",
-                  "ACCOUNT_USAGE.SHARES covers outbound only; inbound needs SHOW SHARES"),
-    PlannedSignal("external_tables", "table_layout",
-                  "no ACCOUNT_USAGE view; needs per-database INFORMATION_SCHEMA.EXTERNAL_TABLES"),
-    PlannedSignal("warehouses", "platform",
-                  "no ACCOUNT_USAGE view; needs SHOW WAREHOUSES"),
-    PlannedSignal("streamlit_apps", "platform",
-                  "needs SHOW STREAMLITS IN ACCOUNT"),
-    PlannedSignal("notebooks", "platform",
-                  "needs SHOW NOTEBOOKS IN ACCOUNT"),
-    PlannedSignal("native_apps", "platform",
-                  "needs SHOW APPLICATIONS / APPLICATION PACKAGES"),
-    PlannedSignal("catalog_integrations", "platform",
-                  "needs SHOW CATALOG INTEGRATIONS"),
-    PlannedSignal("cortex_ai_usage", "platform",
-                  "usage-history extract lands with the full profile (M3)"),
-    PlannedSignal("snowpipe_streaming", "platform",
-                  "usage-history extract lands with the full profile (M3)"),
-    PlannedSignal("search_optimization", "table_layout",
-                  "usage-history extract lands with the full profile (M3)"),
-    PlannedSignal("cursors_in_procedures", "code",
-                  "needs body-scanning pass over procedure definitions"),
+    # Empty as of M3a: the full taxonomy has probes. Add entries here the
+    # moment a new taxonomy item is identified, BEFORE its extract exists —
+    # a signal must never be silently absent from the inventory.
 ]

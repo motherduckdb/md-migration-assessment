@@ -59,31 +59,44 @@ The one-line grant is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <
 To grant less, use Snowflake's database roles on the `SNOWFLAKE` database — the
 matrix below lists what each extractor needs. Extractors whose grants are
 withheld degrade to `unavailable` rows in `meta.extract_runs` naming the
-missing privilege; the collection stays valid.
+missing privilege; the collection stays valid. SHOW-command extracts run with
+any role and report the objects that role can see.
 
-| Extractor | Profile | Minimal privilege | Min edition | INFORMATION_SCHEMA fallback |
+| Extractor | Profile | Source | Minimal privilege | Min edition |
 |---|---|---|---|---|
-| databases | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| schemata | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| tables | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| columns | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| views | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| functions | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| procedures | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| table_storage_metrics | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
-| stage_storage_usage_history | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
-| database_storage_usage_history | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
-| masking_policies | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
-| row_access_policies | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
-| policy_references | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
-| tags | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
-| tag_references | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
-| pipes | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
-| tasks | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
-| stages | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
-| listings | standard | SNOWFLAKE.SECURITY_VIEWER | Standard | no |
-| shares | standard | SNOWFLAKE.SECURITY_VIEWER | Standard | no |
-| roles | standard | SNOWFLAKE.SECURITY_VIEWER | Standard | no |
+| databases | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| schemata | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| tables | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| columns | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| views | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| functions | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| procedures | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| table_storage_metrics | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| stage_storage_usage_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| database_storage_usage_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| masking_policies | standard | ACCOUNT_USAGE | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise |
+| row_access_policies | standard | ACCOUNT_USAGE | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise |
+| policy_references | standard | ACCOUNT_USAGE | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise |
+| tags | standard | ACCOUNT_USAGE | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise |
+| tag_references | standard | ACCOUNT_USAGE | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise |
+| pipes | standard | ACCOUNT_USAGE | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| tasks | standard | ACCOUNT_USAGE | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| stages | standard | ACCOUNT_USAGE | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| listings | standard | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
+| shares | standard | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
+| external_tables | lite | INFORMATION_SCHEMA | any role (objects visible to the role) | Standard |
+| cortex_ai_functions_usage_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| search_optimization_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Enterprise |
+| snowpipe_streaming_client_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| streams | standard | SHOW | any role (objects visible to the role) | Standard |
+| warehouses | standard | SHOW | any role (warehouses visible to the role) | Standard |
+| streamlit_apps | standard | SHOW | any role (objects visible to the role) | Standard |
+| notebooks | standard | SHOW | any role (objects visible to the role) | Standard |
+| applications | standard | SHOW | any role (objects visible to the role) | Standard |
+| application_packages | standard | SHOW | any role (objects visible to the role) | Standard |
+| catalog_integrations | standard | SHOW | any role (integrations visible to the role) | Standard |
+| show_shares | standard | SHOW | any role (shares visible to the role) | Standard |
+| roles | standard | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
 
 The `lite` profile needs no ACCOUNT_USAGE access at all: any role sees its own
 objects through per-database INFORMATION_SCHEMA walks.

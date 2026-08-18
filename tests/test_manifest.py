@@ -80,3 +80,17 @@ def test_source_bodies_are_declared():
         by_name["procedures"].sensitive_fields["procedure_definition"]
         is PrivacyClass.SOURCE_BODY
     )
+
+
+def test_show_extractors_declare_their_handoff_allowlist():
+    """SHOW output is server-defined: without an explicit expected-column
+    allowlist the handoff would drop everything (or, worse, trust drift)."""
+    for ex in EXTRACTORS:
+        if ex.show_sql is None:
+            continue
+        assert ex.expected_show_columns, ex.name
+        allow = {c.lower() for c in ex.expected_show_columns}
+        for col in ex.sensitive_fields:
+            assert col in allow, (ex.name, col)
+        # SHOW extracts have exactly one source
+        assert ex.account_usage_sql is None and ex.info_schema_sql is None, ex.name

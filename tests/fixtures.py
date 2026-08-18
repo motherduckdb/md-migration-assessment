@@ -103,6 +103,9 @@ REALISTIC = {
              procedure_name="P_JS", procedure_language="JAVASCRIPT"),
         dict(procedure_catalog="APPDB", procedure_schema="S1",
              procedure_name="P_PY", procedure_language="PYTHON"),
+        dict(procedure_catalog="APPDB", procedure_schema="S1",
+             procedure_name="P_CURSOR", procedure_language="SQL",
+             procedure_definition="DECLARE c1 CURSOR FOR SELECT * FROM t; BEGIN OPEN c1; END"),
     ]),
     "table_storage_metrics": _t([
         dict(table_catalog="APPDB", table_schema="S1", table_name="PLAIN",
@@ -178,9 +181,86 @@ REALISTIC = {
              title="Partner data share", state="PUBLISHED", is_share=True,
              is_application=False, share="PARTNER_SHARE_OBJ"),
     ]),
+    "external_tables": _t([
+        dict(table_catalog="APPDB", table_schema="S1", table_name="EXT_EVENTS",
+             table_owner="OWNER", location="s3://bucket/ext/",
+             file_format_name="PQ", file_format_type="PARQUET", comment=None),
+    ]),
+    "cortex_ai_functions_usage_history": _t([
+        dict(function_name="COMPLETE", model_name="mistral-large",
+             n_queries=42, total_credits=1.5),
+    ]),
+    "search_optimization_history": _t([
+        dict(database_name="APPDB", schema_name="S1", table_name="PLAIN",
+             n_operations=12, total_credits=0.2),
+    ]),
+    "snowpipe_streaming_client_history": _t([
+        dict(client_name="KAFKA_CONNECTOR_1", n_events=100,
+             total_blob_bytes=1000000),
+    ]),
     "roles": _t([
         dict(name="ACCOUNTADMIN", owner=None, role_type="ROLE", comment=None),
         dict(name="ANALYST", owner="SECURITYADMIN", role_type="ROLE", comment=None),
         dict(name="DB_ROLE", owner="X", role_type="DATABASE_ROLE", comment=None),
+    ]),
+}
+
+
+REALISTIC_SHOW = {
+    "streams": _t([
+        dict(name="ORDERS_STREAM", database_name="APPDB", schema_name="S1",
+             owner="OWNER", table_name="ORDERS", source_type="table",
+             base_tables="APPDB.S1.ORDERS", type="DELTA", stale="false",
+             mode="DEFAULT", comment=None),
+    ]),
+    "warehouses": _t([
+        dict(name="COMPUTE_WH", state="SUSPENDED", type="STANDARD", size="X-Small",
+             min_cluster_count=1, max_cluster_count=1, auto_suspend=600,
+             auto_resume="true", scaling_policy="STANDARD", owner="OWNER",
+             comment=None),
+        dict(name="ETL_WH", state="STARTED", type="STANDARD", size="Medium",
+             min_cluster_count=1, max_cluster_count=3, auto_suspend=60,
+             auto_resume="true", scaling_policy="ECONOMY", owner="OWNER",
+             comment=None),
+        dict(name="SYSTEM$STREAMLIT_NOTEBOOK_WH", state="SUSPENDED",
+             type="STANDARD", size="X-Small", min_cluster_count=1,
+             max_cluster_count=1, auto_suspend=60, auto_resume="true",
+             scaling_policy="STANDARD", owner=None, comment=None),
+    ]),
+    "streamlit_apps": _t([
+        dict(name="SALES_DASH", database_name="APPDB", schema_name="S1",
+             title="Sales dashboard", owner="OWNER", query_warehouse="COMPUTE_WH",
+             comment=None),
+    ]),
+    "notebooks": _t([
+        dict(name="EDA_NOTEBOOK", database_name="APPDB", schema_name="S1",
+             owner="OWNER", query_warehouse="COMPUTE_WH", comment=None),
+    ]),
+    "applications": _t([
+        dict(name="SNOWFLAKE", source_type="", source="", owner=None,
+             version=None, comment=None),
+        dict(name="PARTNER_APP", source_type="listing", source="PARTNER.LST",
+             owner="OWNER", version="1.0", comment=None),
+    ]),
+    "application_packages": _t([
+        dict(name="MY_PKG", distribution="INTERNAL", owner="OWNER", comment=None),
+    ]),
+    "catalog_integrations": _t([
+        dict(name="GLUE_CAT", type="CATALOG", category="GLUE", enabled="true",
+             comment=None),
+    ]),
+    "show_shares": _t([
+        dict(kind="INBOUND", owner_account="SNOWFLAKE", name="SNOWFLAKE.ACCOUNT_USAGE",
+             database_name="SNOWFLAKE", owner=None, listing_global_name=None,
+             secure_objects_only="true", comment=None),
+        dict(kind="INBOUND", owner_account="SFSALES", name="SFSALES.SAMPLES",
+             database_name="SNOWFLAKE_SAMPLE_DATA", owner=None,
+             listing_global_name=None, secure_objects_only="true", comment=None),
+        dict(kind="INBOUND", owner_account="PARTNERORG", name="PARTNERORG.SHARE1",
+             database_name="PARTNER_DATA", owner=None, listing_global_name=None,
+             secure_objects_only="true", comment=None),
+        dict(kind="OUTBOUND", owner_account="SELF", name="MDA_TEST_SHARE",
+             database_name="APPDB", owner="ACCOUNTADMIN", listing_global_name=None,
+             secure_objects_only="false", comment=None),
     ]),
 }

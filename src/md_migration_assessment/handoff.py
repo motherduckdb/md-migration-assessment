@@ -110,7 +110,12 @@ def _projection_columns(sql: str) -> set[str]:
 
 
 def _expected_columns(ex: Extractor) -> set[str]:
-    """Output columns the extractor's version-controlled SQL can produce."""
+    """Output columns the extractor's version-controlled definition can produce.
+
+    SELECT extracts derive theirs from the SQL projection; SHOW extracts have
+    server-defined output, so their manifest declares an explicit allowlist —
+    any server-added column is drift until deliberately admitted.
+    """
     cols: set[str] = set()
     for kind, fname in (
         ("account_usage", ex.account_usage_sql),
@@ -118,6 +123,8 @@ def _expected_columns(ex: Extractor) -> set[str]:
     ):
         if fname:
             cols |= _projection_columns(load_sql(kind, fname))
+    if ex.show_sql:
+        cols |= {c.lower() for c in ex.expected_show_columns}
     return cols
 
 

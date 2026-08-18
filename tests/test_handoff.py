@@ -11,7 +11,7 @@ import pytest
 
 from conftest import FakeSource
 
-from fixtures import REALISTIC
+from fixtures import REALISTIC, REALISTIC_SHOW
 
 from md_migration_assessment.collect.manifest import Profile
 from md_migration_assessment.collect.runner import run_collection
@@ -24,7 +24,10 @@ from md_migration_assessment.report import build_report
 def assessed_db(tmp_path):
     path = str(tmp_path / "private.duckdb")
     con = open_output(path)
-    source = FakeSource(account_usage=dict(REALISTIC), databases=["APPDB"])
+    source = FakeSource(
+        account_usage=dict(REALISTIC), databases=["APPDB"],
+        show_data=dict(REALISTIC_SHOW),
+    )
     run_collection(con, source, profile=Profile.STANDARD)
     build_report(con)
     con.close()
@@ -125,7 +128,9 @@ def test_handoff_discloses_unclassified_included_columns(assessed_db, tmp_path):
             continue
         disclosed = {c for cols in entry["sensitive_included"].values() for c in cols}
         listed = disclosed | set(entry["unclassified_included"])
-        assert listed, name
+        # every kept column is disclosed somewhere; a table may legitimately
+        # list nothing only if everything non-framework was dropped as drift
+        assert listed or entry["dropped_unexpected"], name
 
 
 def test_handoff_multidot_destination_name(assessed_db, tmp_path):

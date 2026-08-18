@@ -49,6 +49,8 @@ class Source(Protocol):
 
     def reader(self, sql: str) -> pa.RecordBatchReader | pa.Table: ...
 
+    def show(self, command: str) -> "tuple[pa.Table, bool]": ...
+
     def list_databases(self) -> list[str]: ...
 
     def session_info(self) -> SessionInfo: ...
@@ -242,6 +244,99 @@ def _run_extractor(
         return run
 
     scope_pred = scope.predicate(ex.scope_columns) if scope else ""
+
+    # SHOW-command path: server output is account-wide; database-resident
+    # objects are scope-filtered CLIENT-SIDE before anything is persisted —
+    # --scope is a privacy boundary, and out-of-scope object names must not
+    # land in the output database (found in review, 2026-08-18).
+    if ex.show_sql:
+        try:
+            table, truncated = source.show(ex.show_sql)
+            scope_note = None
+            achieved_scope: list[str] | None = None
+            db_col = ex.scope_columns.get("database") if scope else None
+            if db_col:
+                schema_col = ex.scope_columns.get("schema")
+                for required in filter(None, (db_col, schema_col)):
+                    if required not in table.column_names:
+                        raise ValueError(
+                            f"cannot scope-filter SHOW output: expected column "
+                            f"{required!r} missing from server response"
+                        )
+                db_vals = table.column(db_col).to_pylist()
+
+                if schema_col:
+                    # Same semantics as the SQL scope predicate: plain-DB
+                    # entries admit the whole database, DB.SCHEMA entries
+                    # admit exactly that pair (a NULL schema there is
+                    # unattributable and drops). NULL database = account-level
+                    # row, attributable to no out-of-scope database; retained.
+                    schema_vals = table.column(schema_col).to_pylist()
+
+                    def in_scope(db, schema) -> bool:
+                        if db is None:
+                            return True
+                        d = str(db).upper()
+                        if d in scope.databases:
+                            return True
+                        return (
+                            schema is not None
+                            and (d, str(schema).upper()) in scope.schemas
+                        )
+
+                    keep = [
+                        i for i, (d, s) in enumerate(zip(db_vals, schema_vals))
+                        if in_scope(d, s)
+                    ]
+                    achieved_scope = scope.as_list()
+                else:
+                    # Database-only inventory (e.g. shares): like the SQL
+                    # predicate, an extract with no schema granularity admits
+                    # the whole database for schema-scoped entries — dropping
+                    # them would falsely report observed_zero.
+                    wanted = scope.all_databases()
+                    keep = [
+                        i for i, d in enumerate(db_vals)
+                        if d is None or str(d).upper() in wanted
+                    ]
+                    achieved_scope = sorted(wanted)
+                if len(keep) != table.num_rows:
+                    # typed indices: a bare [] infers a null-typed array and
+                    # Arrow's take has no kernel for it (found live)
+                    table = table.take(pa.array(keep, type=pa.int64()))
+                scope_note = "SHOW output filtered client-side to requested scope"
+                if not schema_col and scope.schemas:
+                    scope_note += (
+                        " (database granularity: this inventory has no schema column)"
+                    )
+            elif scope:
+                scope_note = (
+                    "collected account-wide: this SHOW inventory has no "
+                    "database residency to scope by"
+                )
+            ing = _Ingestor(con, coll, ex.target_table)
+            ing.ingest(table)
+            run.rows_written = ing.finish()
+            run.source_used = "show"
+            run.actual_scope = achieved_scope
+            if truncated:
+                run.status = "partial"
+                run.error_category = "error"
+                run.error_detail = (
+                    "SHOW returned 10,000 rows — server-side cap reached, "
+                    "output may be truncated"
+                )
+                run.retryable = False
+            else:
+                run.status = "complete"
+                run.error_detail = scope_note
+        except Exception as exc:  # noqa: BLE001
+            kind = _classify(exc)
+            run.status = kind if kind == "unavailable" else "failed"
+            run.error_category = "privilege" if kind == "unavailable" else "error"
+            run.error_detail = f"SHOW extract failed: {exc}"
+            run.retryable = kind != "unavailable"
+        return run
 
     # ACCOUNT_USAGE path — skipped entirely in lite (no ACCOUNT_USAGE grants).
     au_error: Exception | None = None

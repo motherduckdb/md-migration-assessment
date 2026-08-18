@@ -93,7 +93,8 @@ def test_quoted_database_names_are_walked_not_rejected(out_db):
 
 def test_planned_signals_are_visible_unknowns(out_db):
     """P1: unimplemented taxonomy entries must appear as unknown rows, never
-    be silently absent from the inventory."""
+    be silently absent from the inventory. (Empty as of M3a — the mechanism
+    stays, and this test keeps it honest for future additions.)"""
     source = FakeSource(account_usage=dict(REALISTIC), databases=["APPDB"])
     run_collection(out_db, source, profile=Profile.STANDARD)
     build_report(out_db)
@@ -104,7 +105,6 @@ def test_planned_signals_are_visible_unknowns(out_db):
         ).fetchall()
     )
     assert {p.name for p in PLANNED_SIGNALS} == set(rows)
-    assert "SHOW STREAMS" in rows["streams"]
 
 
 def test_sizing_carries_coverage_status(out_db):
@@ -140,3 +140,175 @@ def test_sizing_relation_exists_even_without_table_evidence(out_db):
     build_report(out_db)
     n = out_db.execute("SELECT count(*) FROM report.sizing").fetchone()[0]
     assert n == 0
+
+
+def test_show_output_is_scope_filtered_client_side(out_db):
+    """--scope is a privacy boundary: SHOW output rows for out-of-scope
+    databases must not be persisted (found in review, 2026-08-18)."""
+    import pyarrow as pa
+
+    streams = pa.table({
+        "name": ["IN_SCOPE", "OUT_SCOPE", "ACCOUNT_LEVEL"],
+        "database_name": ["APPDB", "SECRETDB", None],
+        "schema_name": ["S1", "S1", None],
+    })
+    source = FakeSource(
+        account_usage=dict(REALISTIC),
+        databases=["APPDB", "SECRETDB"],
+        show_data={"streams": streams},
+    )
+    coll = run_collection(
+        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    )
+    names = {
+        r[0] for r in out_db.execute("SELECT name FROM raw.streams").fetchall()
+    }
+    assert "OUT_SCOPE" not in names
+    assert names == {"IN_SCOPE", "ACCOUNT_LEVEL"}  # NULL-db rows retained
+    row = out_db.execute(
+        "SELECT status, error_detail FROM meta.extract_runs "
+        "WHERE collection_id = ? AND extractor = 'streams'",
+        [str(coll.collection_id)],
+    ).fetchone()
+    assert row[0] == "complete"
+    assert "filtered client-side" in row[1]
+
+
+def test_account_level_show_extracts_note_scope_inapplicability(out_db):
+    source = FakeSource(account_usage=dict(REALISTIC), databases=["APPDB"])
+    coll = run_collection(
+        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    )
+    row = out_db.execute(
+        "SELECT status, error_detail FROM meta.extract_runs "
+        "WHERE collection_id = ? AND extractor = 'warehouses'",
+        [str(coll.collection_id)],
+    ).fetchone()
+    assert row[0] == "complete"
+    assert "no database residency" in row[1]
+
+
+def test_show_scope_filter_handles_empty_results(out_db):
+    """Regression (found live): filtering an empty SHOW result produced a
+    null-typed take-index array that Arrow has no kernel for."""
+    import pyarrow as pa
+
+    empty = pa.table({
+        "name": pa.array([], pa.string()),
+        "database_name": pa.array([], pa.string()),
+        "schema_name": pa.array([], pa.string()),
+    })
+    all_filtered = pa.table({
+        "name": ["OUT_ONLY"],
+        "database_name": ["SECRETDB"],
+        "schema_name": ["S1"],
+    })
+    source = FakeSource(
+        account_usage=dict(REALISTIC),
+        databases=["APPDB", "SECRETDB"],
+        show_data={"streamlit_apps": empty, "notebooks": all_filtered},
+    )
+    coll = run_collection(
+        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    )
+    statuses = dict(
+        out_db.execute(
+            "SELECT extractor, status FROM meta.extract_runs "
+            "WHERE collection_id = ? AND extractor IN ('streamlit_apps', 'notebooks')",
+            [str(coll.collection_id)],
+        ).fetchall()
+    )
+    assert statuses == {"streamlit_apps": "complete", "notebooks": "complete"}
+    assert out_db.execute("SELECT count(*) FROM raw.notebooks").fetchone()[0] == 0
+
+
+def test_show_output_honors_schema_level_scope(out_db):
+    """Confirmed repro from review: --scope APPDB.S1 must not persist rows
+    from APPDB.SECRET_SCHEMA."""
+    import pyarrow as pa
+
+    streams = pa.table({
+        "name": ["IN_SCHEMA", "OUT_SCHEMA", "NULL_SCHEMA", "ACCOUNT_LEVEL"],
+        "database_name": ["APPDB", "APPDB", "APPDB", None],
+        "schema_name": ["S1", "SECRET_SCHEMA", None, None],
+    })
+    source = FakeSource(
+        account_usage=dict(REALISTIC),
+        databases=["APPDB"],
+        show_data={"streams": streams},
+    )
+    run_collection(
+        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    )
+    names = {r[0] for r in out_db.execute("SELECT name FROM raw.streams").fetchall()}
+    # schema-scoped: only the exact pair plus account-level NULL-db rows; a
+    # NULL schema inside a schema-scoped database is unattributable → dropped
+    assert names == {"IN_SCHEMA", "ACCOUNT_LEVEL"}
+
+
+def test_show_scope_filter_fails_closed_on_missing_schema_column(out_db):
+    import pyarrow as pa
+
+    no_schema = pa.table({"name": ["X"], "database_name": ["APPDB"]})
+    source = FakeSource(
+        account_usage=dict(REALISTIC),
+        databases=["APPDB"],
+        show_data={"streams": no_schema},
+    )
+    coll = run_collection(
+        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    )
+    row = out_db.execute(
+        "SELECT status, error_detail FROM meta.extract_runs "
+        "WHERE collection_id = ? AND extractor = 'streams'",
+        [str(coll.collection_id)],
+    ).fetchone()
+    assert row[0] == "failed"
+    assert "schema_name" in row[1]
+
+
+def test_database_only_show_extracts_keep_whole_database_under_schema_scope(out_db):
+    """Confirmed repro from review: show_shares has no schema column; under
+    --scope APPDB.S1 its APPDB rows must be kept (database granularity, like
+    the SQL predicate), not dropped into a false observed_zero."""
+    import pyarrow as pa
+
+    shares = pa.table({
+        "kind": ["OUTBOUND", "OUTBOUND", "INBOUND"],
+        "name": ["APPDB_SHARE", "SECRET_SHARE", "NO_DB_YET"],
+        "database_name": ["APPDB", "SECRETDB", None],
+    })
+    source = FakeSource(
+        account_usage=dict(REALISTIC),
+        databases=["APPDB", "SECRETDB"],
+        show_data={"show_shares": shares},
+    )
+    coll = run_collection(
+        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    )
+    names = {r[0] for r in out_db.execute("SELECT name FROM raw.show_shares").fetchall()}
+    assert names == {"APPDB_SHARE", "NO_DB_YET"}
+    row = out_db.execute(
+        "SELECT actual_scope, error_detail FROM meta.extract_runs "
+        "WHERE collection_id = ? AND extractor = 'show_shares'",
+        [str(coll.collection_id)],
+    ).fetchone()
+    assert row[0] == '["APPDB"]'  # achieved: coarser database granularity
+    assert "database granularity" in row[1]
+
+
+def test_scoped_show_extracts_record_actual_scope(out_db):
+    source = FakeSource(
+        account_usage=dict(REALISTIC),
+        databases=["APPDB"],
+        show_data=dict(__import__("fixtures").REALISTIC_SHOW),
+    )
+    coll = run_collection(
+        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    )
+    row = out_db.execute(
+        "SELECT actual_scope FROM meta.extract_runs "
+        "WHERE collection_id = ? AND extractor = 'streams'",
+        [str(coll.collection_id)],
+    ).fetchone()
+    assert row[0] == '["APPDB.S1"]'  # schema-capable: exact requested scope
