@@ -118,6 +118,36 @@ STATEMENTS: list[str] = [
     CREATE OR REPLACE MATERIALIZED VIEW {DB1}.ANALYTICS.ORDERS_MV AS
     SELECT customer, sum(amount) AS total FROM {DB1}.SALES.ORDERS GROUP BY customer
     """,
+    # ── M2 feature objects: governance, pipeline, and platform signals ──
+    f"CREATE OR REPLACE STREAM {DB1}.SALES.ORDERS_STREAM ON TABLE {DB1}.SALES.ORDERS",
+    f"CREATE OR REPLACE TABLE {DB1}.SALES.ORDERS_CLONE CLONE {DB1}.SALES.ORDERS",
+    f"""
+    CREATE OR REPLACE MASKING POLICY {DB1}.SALES.MASK_CUSTOMER AS (val VARCHAR)
+    RETURNS VARCHAR ->
+    CASE WHEN current_role() = 'ACCOUNTADMIN' THEN val ELSE '***' END
+    """,
+    # applied to the clone, not ORDERS: Snowflake forbids masking policies on
+    # columns referenced by a materialized view (ORDERS_MV)
+    f"""
+    ALTER TABLE {DB1}.SALES.ORDERS_CLONE MODIFY COLUMN customer
+    SET MASKING POLICY {DB1}.SALES.MASK_CUSTOMER
+    """,
+    f"""
+    CREATE OR REPLACE ROW ACCESS POLICY {DB1}.SALES.RAP_EVENTS AS (etype VARCHAR)
+    RETURNS BOOLEAN -> true
+    """,
+    f"""
+    ALTER TABLE {DB1}.SALES.EVENTS
+    ADD ROW ACCESS POLICY {DB1}.SALES.RAP_EVENTS ON (event_type)
+    """,
+    f"CREATE OR REPLACE TAG {DB1}.SALES.DATA_CLASS ALLOWED_VALUES 'public', 'pii'",
+    f"ALTER TABLE {DB1}.SALES.ORDERS SET TAG {DB1}.SALES.DATA_CLASS = 'pii'",
+    f"CREATE STAGE IF NOT EXISTS {DB1}.SALES.LOAD_STAGE",
+    f"""
+    CREATE OR REPLACE PIPE {DB1}.SALES.LOAD_PIPE AS
+    COPY INTO {DB1}.ANALYTICS.SCRATCH FROM @{DB1}.SALES.LOAD_STAGE
+    FILE_FORMAT = (TYPE = 'CSV')
+    """,
     # low-privilege role for fallback / least-privilege testing: sees DB1 only
     f"CREATE ROLE IF NOT EXISTS {LOWPRIV_ROLE}",
     f"GRANT USAGE ON DATABASE {DB1} TO ROLE {LOWPRIV_ROLE}",
@@ -140,6 +170,17 @@ def main() -> int:
     statements.append(f'GRANT ROLE {LOWPRIV_ROLE} TO USER "{user}"')
     if warehouse:
         statements.append(f"GRANT USAGE ON WAREHOUSE {warehouse} TO ROLE {LOWPRIV_ROLE}")
+        # warehouse-dependent M2 objects
+        statements.append(f"""
+            CREATE OR REPLACE DYNAMIC TABLE {DB1}.ANALYTICS.ORDERS_DYNAMIC
+            TARGET_LAG = '1 hour' WAREHOUSE = {warehouse} AS
+            SELECT customer, sum(amount) AS total FROM {DB1}.SALES.ORDERS GROUP BY customer
+        """)
+        statements.append(f"""
+            CREATE OR REPLACE TASK {DB1}.SALES.DAILY_ROLLUP
+            WAREHOUSE = {warehouse} SCHEDULE = '1440 MINUTE' AS
+            SELECT count(*) FROM {DB1}.SALES.ORDERS
+        """)
 
     failures: list[tuple[str, str]] = []
     for stmt in statements:

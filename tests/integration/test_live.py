@@ -85,6 +85,9 @@ def test_lite_profile(tmp_path, source):
 
 
 def test_standard_profile(tmp_path, source):
+    from md_migration_assessment.report import build_report
+    from md_migration_assessment.report.signals import SIGNALS
+
     con = open_output(str(tmp_path / "standard.duckdb"))
     coll = run_collection(con, source, profile=Profile.STANDARD)
     runs = _runs(con, coll)
@@ -100,6 +103,23 @@ def test_standard_profile(tmp_path, source):
             ex.name,
             runs[ex.name],
         )
+
+    # feature inventory: every signal gets a row and no probe may crash on
+    # real data (a probe failure = column-shape drift between probe and raw)
+    build_report(con)
+    feats = con.execute(
+        """
+        SELECT feature, observation_status, count, note
+        FROM report.feature_inventory WHERE collection_id = ?
+        """,
+        [str(coll.collection_id)],
+    ).fetchall()
+    assert len(feats) == len(SIGNALS)
+    broken = [f for f in feats if f[3] and f[3].startswith("probe failed")]
+    assert not broken, f"probes broken on real data: {broken}"
+    observed = [f"  {f[0]}={f[2]}" for f in feats if f[1] == "observed"]
+    print("features observed live:")
+    print("\n".join(observed) or "  (none yet — ACCOUNT_USAGE lag)")
     con.close()
 
 

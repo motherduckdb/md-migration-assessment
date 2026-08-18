@@ -15,6 +15,8 @@ SELECT
     -- both sources producing the same raw shape.
     CAST(NULL AS VARCHAR) AS is_secure,
     volatility,
+    packages,
+    runtime_version,
     created,
     last_altered,
     comment

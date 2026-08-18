@@ -52,6 +52,8 @@ def collect(
         # M3 implements the other modes; refuse rather than silently ignore.
         raise typer.BadParameter("only --query-text hashed is implemented so far")
 
+    from .report import build_report
+
     cfg = SnowflakeConfig.from_env()
     con = open_output(output)
     source = SnowflakeSource.open(cfg)
@@ -64,12 +66,33 @@ def collect(
             history_days=history_days,
             query_text_mode=query_text,
         )
+        build_report(con)
     finally:
         source.close()
         con.close()
 
     typer.echo(f"collection {coll.collection_id} written to {output}")
     report(db=output)
+
+
+@app.command()
+def assess(
+    db: str = typer.Option("assessment.duckdb", help="Assessment database path."),
+) -> None:
+    """(Re)build the factual report.* views on an existing collection."""
+    import duckdb
+
+    from .report import build_report
+
+    con = duckdb.connect(db)
+    try:
+        summary = build_report(con)
+    finally:
+        con.close()
+    typer.echo(
+        f"report built: {summary['collections']} collection(s), "
+        f"{summary['features']} feature rows ({summary['unknown']} unknown)"
+    )
 
 
 @app.command()
@@ -117,6 +140,35 @@ def report(
             "\nStatuses: complete/partial/unavailable/failed/not_requested. "
             "Missing evidence is never an observed zero — see meta.gaps."
         )
+
+        has_features = con.execute(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema = 'report' AND table_name = 'feature_inventory'"
+        ).fetchone()[0]
+        if has_features:
+            observed = con.execute(
+                """
+                SELECT category, feature, count FROM report.feature_inventory
+                WHERE collection_id = ? AND observation_status = 'observed'
+                ORDER BY category, count DESC
+                """,
+                [str(cid)],
+            ).fetchall()
+            unknown = con.execute(
+                "SELECT count(*) FROM report.feature_inventory "
+                "WHERE collection_id = ? AND observation_status = 'unknown'",
+                [str(cid)],
+            ).fetchone()[0]
+            typer.echo("\nfeatures observed (facts only — no compatibility judgments):")
+            if not observed:
+                typer.echo("  none")
+            for category, feature, n in observed:
+                typer.echo(f"  {category:<14} {feature:<32} {n:>8,}")
+            if unknown:
+                typer.echo(
+                    f"  ({unknown} features unknown — source extracts incomplete; "
+                    "see report.feature_inventory)"
+                )
     finally:
         con.close()
 

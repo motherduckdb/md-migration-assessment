@@ -53,7 +53,14 @@ class FakeSource:
             database, view = m.group(1), m.group(2).lower()
             name = _VIEW_TO_EXTRACTOR.get(view, view)
             per_db = self.info_schema.get(name, {})
-            result = per_db.get(database, small_table())
+            if database in per_db:
+                result = per_db[database]
+            else:
+                # Like real Snowflake: the same objects are visible through
+                # INFORMATION_SCHEMA that ACCOUNT_USAGE reports (when the
+                # account_usage entry is a table, not an injected error).
+                au = self.account_usage.get(name)
+                result = au if isinstance(au, pa.Table) else small_table()
             if isinstance(result, Exception):
                 raise result
             return result

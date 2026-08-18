@@ -9,3 +9,4 @@ dist/
 
 # local credentials, never committed
 .env*
+.dive-preview/

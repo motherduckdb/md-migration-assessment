@@ -10,6 +10,8 @@ SELECT
     is_external,
     is_secure,
     volatility,
+    packages,
+    runtime_version,
     created,
     last_altered,
     comment
