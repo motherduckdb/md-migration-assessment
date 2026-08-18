@@ -102,8 +102,17 @@ def open_output(path: str) -> duckdb.DuckDBPyConnection:
             "local collection cannot write to a MotherDuck database; "
             "use 'md-assess upload' to share an assessment explicitly"
         )
+    # The 0600 guarantee must cover DuckDB's sidecar files too (<path>.wal,
+    # temp files), and those are created lazily by later writes — a chmod of
+    # the main file alone leaves a world-readable WAL behind after a crash.
+    # A restrictive umask makes every file this process creates private by
+    # construction.
+    os.umask(0o077)
     con = duckdb.connect(path)
     os.chmod(path, 0o600)
+    wal = path + ".wal"
+    if os.path.exists(wal):
+        os.chmod(wal, 0o600)
     con.execute(_META_DDL)
     return con
 

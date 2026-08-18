@@ -22,7 +22,7 @@ from __future__ import annotations
 import duckdb
 
 from .. import RAW_SCHEMA_VERSION
-from .signals import SIGNALS
+from .signals import PLANNED_SIGNALS, SIGNALS
 
 _FEATURE_DDL = """
 CREATE SCHEMA IF NOT EXISTS report;
@@ -134,6 +134,18 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
             if obs == "unknown":
                 summary["unknown"] += 1
 
+        # Taxonomy entries with no probe yet: visible unknowns, never silent
+        # omissions — the inventory must not look complete when it is not.
+        for planned in PLANNED_SIGNALS:
+            con.execute(
+                "INSERT INTO report.feature_inventory VALUES "
+                "(?, ?, ?, 'unknown', NULL, [], '(not implemented)', NULL, NULL, ?)",
+                [cid, planned.category, planned.name,
+                 f"signal not implemented in this version: {planned.reason}"],
+            )
+            summary["features"] += 1
+            summary["unknown"] += 1
+
     _build_sizing(con)
     return summary
 
@@ -168,8 +180,16 @@ def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
             t.bytes::BIGINT AS bytes,
             {storage_cols},
             t.retention_time::INTEGER AS retention_time,
-            (t.table_catalog = 'SNOWFLAKE' OR t.table_catalog LIKE 'USER$%') AS is_system
+            (t.table_catalog = 'SNOWFLAKE' OR t.table_catalog LIKE 'USER$%') AS is_system,
+            -- coverage travels with the rows: partial table coverage or an
+            -- unavailable storage extract must be visible, not implied
+            tr.status AS tables_extract_status,
+            coalesce(sr.status, 'unavailable') AS storage_extract_status
         FROM raw.tables t
+        LEFT JOIN meta.extract_runs tr
+            ON tr.collection_id = t.collection_id AND tr.extractor = 'tables'
+        LEFT JOIN meta.extract_runs sr
+            ON sr.collection_id = t.collection_id AND sr.extractor = 'table_storage_metrics'
         {storage_join}
         WHERE t.table_type IN ('BASE TABLE', 'MATERIALIZED VIEW')
     """)

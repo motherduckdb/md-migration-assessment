@@ -44,10 +44,44 @@ in `meta.extract_runs`, and missing evidence is never presented as an observed z
 
 The simple path is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
 A least-privilege matrix (per-extractor Snowflake database roles, edition
-requirements, and INFORMATION_SCHEMA fallbacks) will be documented here.
+requirements, and INFORMATION_SCHEMA fallbacks) is at the bottom of this file.
 
 ## License
 
 Apache-2.0. Portions of the extraction SQL are derived from
 [google/dwh-migration-tools](https://github.com/google/dwh-migration-tools)
 (Apache-2.0); files retain attribution headers.
+
+## Least-privilege matrix
+
+The one-line grant is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
+To grant less, use Snowflake's database roles on the `SNOWFLAKE` database — the
+matrix below lists what each extractor needs. Extractors whose grants are
+withheld degrade to `unavailable` rows in `meta.extract_runs` naming the
+missing privilege; the collection stays valid.
+
+| Extractor | Profile | Minimal privilege | Min edition | INFORMATION_SCHEMA fallback |
+|---|---|---|---|---|
+| databases | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
+| schemata | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
+| tables | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
+| columns | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
+| views | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
+| functions | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
+| procedures | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
+| table_storage_metrics | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
+| stage_storage_usage_history | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
+| database_storage_usage_history | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
+| masking_policies | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
+| row_access_policies | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
+| policy_references | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
+| tags | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
+| tag_references | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
+| pipes | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
+| tasks | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
+| stages | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
+| listings | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
+| roles | standard | SNOWFLAKE.SECURITY_VIEWER | Standard | no |
+
+The `lite` profile needs no ACCOUNT_USAGE access at all: any role sees its own
+objects through per-database INFORMATION_SCHEMA walks.

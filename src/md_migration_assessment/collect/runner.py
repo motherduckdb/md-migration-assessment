@@ -114,9 +114,11 @@ def _render(sql: str, *, scope_pred: str, window_days: int | None, database: str
     if window_days is not None:
         out = out.replace("{window_days}", str(int(window_days)))
     if database is not None:
-        if not _IDENTIFIER_RE.match(database):
-            raise ValueError(f"unsupported database identifier {database!r}")
-        out = out.replace("{database}", database).replace("{database_literal}", database)
+        # Discovered database names come from Snowflake itself and may contain
+        # spaces, punctuation, or mixed case — quote, never reject.
+        quoted = '"' + database.replace('"', '""') + '"'
+        literal = database.replace("'", "''")
+        out = out.replace("{database}", quoted).replace("{database_literal}", literal)
     return out
 
 
@@ -172,6 +174,16 @@ def run_collection(
     query_text_mode: str = "hashed",
     mode: str = "local",
 ) -> Collection:
+    # Raw evidence is immutable: ingest uses CREATE OR REPLACE per extract, so
+    # a second collection in the same file would silently destroy the first
+    # collection's raw.* rows while meta.collections still listed both.
+    existing = con.execute("SELECT count(*) FROM meta.collections").fetchone()[0]
+    if existing:
+        raise ValueError(
+            "output database already contains a collection; write each "
+            "collection to a new file"
+        )
+
     info = source.session_info()
     coll = Collection(
         profile=profile.name.lower(),
@@ -263,14 +275,21 @@ def _run_extractor(
             run.error_detail = f"could not enumerate databases: {exc}"
             run.retryable = True
             return run
-        if scope:
-            wanted = scope.all_databases()
-            databases = [d for d in databases if d.upper() in wanted]
-
         ing = _Ingestor(con, coll, ex.target_table)
         succeeded: list[str] = []
         failures: list[str] = []
         failure_kinds: set[str] = set()
+        if scope:
+            # A requested database the role cannot even enumerate is missing
+            # evidence, not covered scope — it must degrade the status.
+            wanted = scope.all_databases()
+            visible = {d.upper() for d in databases}
+            for missing in sorted(wanted - visible):
+                failures.append(
+                    f"{missing}: not visible to this role (missing or unauthorized)"
+                )
+                failure_kinds.add("unavailable")
+            databases = [d for d in databases if d.upper() in wanted]
         for database in databases:
             try:
                 sql = _render(

@@ -33,7 +33,7 @@ def _tbl(name, schema="S1", catalog="APPDB", **kw) -> dict:
 def _col(table, column, data_type, precision=None, catalog="APPDB") -> dict:
     return dict(
         table_catalog=catalog, table_schema="S1", table_name=table,
-        column_name=column, ordinal_position=1, column_default=None,
+        column_name=column, ordinal_position=1, column_default="0 /* body */",
         is_nullable="YES", data_type=data_type, datetime_precision=precision,
         comment=None,
     )
@@ -85,7 +85,8 @@ REALISTIC = {
     ]),
     "functions": _t([
         dict(function_catalog="APPDB", function_schema="S1", function_name="F_SQL",
-             function_language="SQL", is_external="NO", packages=None),
+             function_language="SQL", is_external="NO", packages=None,
+             function_definition="a + b"),
         dict(function_catalog="APPDB", function_schema="S1", function_name="F_JS",
              function_language="JAVASCRIPT", is_external="NO", packages=None),
         dict(function_catalog="APPDB", function_schema="S1", function_name="F_PY",
@@ -96,7 +97,8 @@ REALISTIC = {
     ]),
     "procedures": _t([
         dict(procedure_catalog="APPDB", procedure_schema="S1",
-             procedure_name="P_SQL", procedure_language="SQL"),
+             procedure_name="P_SQL", procedure_language="SQL",
+             procedure_definition="BEGIN RETURN 1; END"),
         dict(procedure_catalog="APPDB", procedure_schema="S1",
              procedure_name="P_JS", procedure_language="JAVASCRIPT"),
         dict(procedure_catalog="APPDB", procedure_schema="S1",
@@ -151,6 +153,25 @@ REALISTIC = {
         dict(pipe_catalog="APPDB", pipe_schema="S1", pipe_name="LOAD_MANUAL",
              pipe_owner="OWNER", is_autoingest_enabled="NO",
              definition="COPY INTO ...", comment=None),
+    ]),
+    "tasks": _t([
+        dict(task_database="APPDB", task_schema="S1", task_name="NIGHTLY_ROLLUP",
+             task_owner="OWNER", warehouse="WH1", schedule="1440 MINUTE",
+             state="started", definition="INSERT INTO ...", condition=None,
+             comment=None),
+    ]),
+    "stages": _t([
+        dict(stage_catalog="APPDB", stage_schema="S1", stage_name="S3_LANDING",
+             stage_owner="OWNER", stage_url="s3://bucket/path",
+             stage_type="External Named", comment=None),
+        dict(stage_catalog="APPDB", stage_schema="S1", stage_name="INT_STAGE",
+             stage_owner="OWNER", stage_url=None,
+             stage_type="Internal Named", comment=None),
+    ]),
+    "listings": _t([
+        dict(name="PARTNER_SHARE", global_name=None, owner="OWNER",
+             title="Partner data share", state="PUBLISHED", is_share=True,
+             is_application=False, share="PARTNER_SHARE_OBJ"),
     ]),
     "roles": _t([
         dict(name="ACCOUNTADMIN", owner=None, role_type="ROLE", comment=None),

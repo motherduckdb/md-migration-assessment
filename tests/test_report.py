@@ -11,7 +11,7 @@ from fixtures import REALISTIC
 from md_migration_assessment.collect.manifest import Profile
 from md_migration_assessment.collect.runner import run_collection
 from md_migration_assessment.report import build_report
-from md_migration_assessment.report.signals import SIGNALS
+from md_migration_assessment.report.signals import PLANNED_SIGNALS, SIGNALS
 
 
 def collect_and_report(out_db, source, profile=Profile.STANDARD):
@@ -37,7 +37,8 @@ def realistic_source(**overrides):
 
 def test_every_signal_has_a_row(out_db):
     _, feats = collect_and_report(out_db, realistic_source())
-    assert set(feats) == {s.name for s in SIGNALS}
+    expected = {s.name for s in SIGNALS} | {p.name for p in PLANNED_SIGNALS}
+    assert set(feats) == expected
 
 
 @pytest.mark.parametrize(
@@ -179,7 +180,7 @@ def test_rebuild_is_idempotent(out_db):
     collect_and_report(out_db, realistic_source())
     build_report(out_db)
     n = out_db.execute("SELECT count(*) FROM report.feature_inventory").fetchone()[0]
-    assert n == len(SIGNALS)
+    assert n == len(SIGNALS) + len(PLANNED_SIGNALS)
 
 
 def test_raw_schema_version_mismatch_is_a_clear_error(out_db):

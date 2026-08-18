@@ -176,4 +176,54 @@ SIGNALS: list[Signal] = [
            f"upper(coalesce(is_autoingest_enabled::VARCHAR, 'NO')) {_YES}",
            "pipe_catalog || '.' || pipe_schema || '.' || pipe_name",
            catalog_col="pipe_catalog"),
+    _probe("scheduled_tasks", "platform", "tasks",
+           "true", "task_database || '.' || task_schema || '.' || task_name",
+           catalog_col="task_database"),
+    _probe("external_stages", "platform", "stages",
+           "upper(coalesce(stage_type, '')) LIKE 'EXTERNAL%'",
+           "stage_catalog || '.' || stage_schema || '.' || stage_name",
+           catalog_col="stage_catalog"),
+    _probe("data_shares_and_listings", "platform", "listings",
+           "true", "name"),
+]
+
+
+@dataclass(frozen=True)
+class PlannedSignal:
+    """A taxonomy entry the tool does not collect evidence for yet.
+
+    Emitted into report.feature_inventory as ``unknown`` so the factual
+    inventory can never look complete while silently omitting a feature
+    family (spec: missing evidence is never an observed zero — and an
+    unimplemented probe is missing evidence).
+    """
+
+    name: str
+    category: str
+    reason: str
+
+
+PLANNED_SIGNALS: list[PlannedSignal] = [
+    PlannedSignal("streams", "platform",
+                  "no ACCOUNT_USAGE view; needs SHOW STREAMS IN ACCOUNT"),
+    PlannedSignal("external_tables", "table_layout",
+                  "no ACCOUNT_USAGE view; needs per-database INFORMATION_SCHEMA.EXTERNAL_TABLES"),
+    PlannedSignal("warehouses", "platform",
+                  "no ACCOUNT_USAGE view; needs SHOW WAREHOUSES"),
+    PlannedSignal("streamlit_apps", "platform",
+                  "needs SHOW STREAMLITS IN ACCOUNT"),
+    PlannedSignal("notebooks", "platform",
+                  "needs SHOW NOTEBOOKS IN ACCOUNT"),
+    PlannedSignal("native_apps", "platform",
+                  "needs SHOW APPLICATIONS / APPLICATION PACKAGES"),
+    PlannedSignal("catalog_integrations", "platform",
+                  "needs SHOW CATALOG INTEGRATIONS"),
+    PlannedSignal("cortex_ai_usage", "platform",
+                  "usage-history extract lands with the full profile (M3)"),
+    PlannedSignal("snowpipe_streaming", "platform",
+                  "usage-history extract lands with the full profile (M3)"),
+    PlannedSignal("search_optimization", "table_layout",
+                  "usage-history extract lands with the full profile (M3)"),
+    PlannedSignal("cursors_in_procedures", "code",
+                  "needs body-scanning pass over procedure definitions"),
 ]

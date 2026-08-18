@@ -8,7 +8,7 @@ import pytest
 from md_migration_assessment.collect.snowflake import SessionInfo
 
 _AU_RE = re.compile(r"snowflake\.account_usage\.(\w+)", re.IGNORECASE)
-_IS_RE = re.compile(r"FROM\s+(\w+)\.information_schema\.(\w+)", re.IGNORECASE)
+_IS_RE = re.compile(r'FROM\s+"((?:[^"]|"")+)"\.information_schema\.(\w+)', re.IGNORECASE)
 
 #: INFORMATION_SCHEMA view -> extractor/table name where they differ.
 _VIEW_TO_EXTRACTOR = {}
