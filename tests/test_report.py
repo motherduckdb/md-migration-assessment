@@ -80,6 +80,10 @@ def test_every_signal_has_a_row(out_db):
         ("tag_assignments", 1, "PLAIN"),
         ("custom_roles", 1, "ANALYST"),
         ("snowpipes", 2, "LOAD_EVENTS"),
+        ("outbound_shares", 1, "OUT_SHARE"),
+        ("listings", 1, "PARTNER_SHARE"),
+        ("scheduled_tasks", 1, "NIGHTLY_ROLLUP"),
+        ("external_stages", 1, "S3_LANDING"),
         ("auto_ingest_pipes", 1, "LOAD_EVENTS"),
     ],
 )

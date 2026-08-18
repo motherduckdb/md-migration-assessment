@@ -121,3 +121,22 @@ def test_sizing_carries_coverage_status(out_db):
     assert row[0] == "complete"
     assert row[1] == "unavailable"  # nulls below are explained, not implied
     assert row[2] is None
+
+
+def test_sizing_relation_exists_even_without_table_evidence(out_db):
+    """P2: an entirely invisible scope must yield an empty sizing relation
+    with coverage recorded in meta — not 'relation does not exist'."""
+    source = FakeSource(
+        account_usage={"tables": Exception(NOT_AUTHORIZED)},
+        info_schema={"tables": {"APPDB": Exception(NOT_AUTHORIZED)}},
+        databases=["APPDB"],
+    )
+    run_collection(out_db, source, profile=Profile.STANDARD)
+    # raw.tables was never created
+    assert not out_db.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_schema='raw' AND table_name='tables'"
+    ).fetchone()[0]
+    build_report(out_db)
+    n = out_db.execute("SELECT count(*) FROM report.sizing").fetchone()[0]
+    assert n == 0

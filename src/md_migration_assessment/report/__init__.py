@@ -150,8 +150,23 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
     return summary
 
 
+_SIZING_DDL = """
+DROP TABLE IF EXISTS report.sizing;
+CREATE TABLE report.sizing (
+    collection_id UUID, table_catalog VARCHAR, table_schema VARCHAR,
+    table_name VARCHAR, table_type VARCHAR, row_count BIGINT, bytes BIGINT,
+    active_bytes BIGINT, time_travel_bytes BIGINT, failsafe_bytes BIGINT,
+    retained_for_clone_bytes BIGINT, retention_time INTEGER, is_system BOOLEAN,
+    tables_extract_status VARCHAR, storage_extract_status VARCHAR
+);
+"""
+
+
 def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute("DROP TABLE IF EXISTS report.sizing")
+    # The relation always exists with a stable shape; when table evidence is
+    # entirely missing it is empty and meta.extract_runs explains why —
+    # "relation does not exist" is not an acceptable coverage signal.
+    con.execute(_SIZING_DDL)
     if not _table_exists(con, "raw", "tables"):
         return
     storage_join = ""
@@ -172,7 +187,7 @@ def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
             "AND s.table_name = t.table_name"
         )
     con.execute(f"""
-        CREATE TABLE report.sizing AS
+        INSERT INTO report.sizing
         SELECT
             t.collection_id,
             t.table_catalog, t.table_schema, t.table_name, t.table_type,

@@ -168,6 +168,11 @@ REALISTIC = {
              stage_owner="OWNER", stage_url=None,
              stage_type="Internal Named", comment=None),
     ]),
+    "shares": _t([
+        dict(name="OUT_SHARE", owner="OWNER", database_name="APPDB",
+             secure_objects_only="true", target_accounts="PARTNERORG.ACCT1",
+             listing_global_name=None, comment=None),
+    ]),
     "listings": _t([
         dict(name="PARTNER_SHARE", global_name=None, owner="OWNER",
              title="Partner data share", state="PUBLISHED", is_share=True,

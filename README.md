@@ -52,6 +52,7 @@ Apache-2.0. Portions of the extraction SQL are derived from
 [google/dwh-migration-tools](https://github.com/google/dwh-migration-tools)
 (Apache-2.0); files retain attribution headers.
 
+
 ## Least-privilege matrix
 
 The one-line grant is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
@@ -69,7 +70,7 @@ missing privilege; the collection stays valid.
 | views | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
 | functions | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
 | procedures | lite | SNOWFLAKE.OBJECT_VIEWER | Standard | yes |
-| table_storage_metrics | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
+| table_storage_metrics | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
 | stage_storage_usage_history | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
 | database_storage_usage_history | standard | SNOWFLAKE.USAGE_VIEWER | Standard | no |
 | masking_policies | standard | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise | no |
@@ -80,7 +81,8 @@ missing privilege; the collection stays valid.
 | pipes | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
 | tasks | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
 | stages | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
-| listings | standard | SNOWFLAKE.OBJECT_VIEWER | Standard | no |
+| listings | standard | SNOWFLAKE.SECURITY_VIEWER | Standard | no |
+| shares | standard | SNOWFLAKE.SECURITY_VIEWER | Standard | no |
 | roles | standard | SNOWFLAKE.SECURITY_VIEWER | Standard | no |
 
 The `lite` profile needs no ACCOUNT_USAGE access at all: any role sees its own

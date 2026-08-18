@@ -88,3 +88,86 @@ def test_handoff_refuses_to_overwrite(assessed_db, tmp_path):
     build_handoff(assessed_db, dest)
     with pytest.raises(ValueError, match="refusing to overwrite"):
         build_handoff(assessed_db, dest)
+
+
+def test_handoff_rejects_motherduck_destinations(assessed_db):
+    with pytest.raises(ValueError, match="local file path"):
+        build_handoff(assessed_db, "md:sneaky_upload")
+    with pytest.raises(ValueError, match="local file path"):
+        build_handoff("md:remote_source", "/tmp/x.duckdb")
+
+
+def test_handoff_drops_undeclared_drifted_columns(assessed_db, tmp_path):
+    """Fail-closed: a column the version-controlled extract SQL never
+    produced (drift, overrides) must not survive into a handoff."""
+    con = duckdb.connect(assessed_db)
+    con.execute("ALTER TABLE raw.views ADD COLUMN query_text VARCHAR")
+    con.execute("UPDATE raw.views SET query_text = 'SELECT secret FROM t'")
+    con.close()
+
+    dest = str(tmp_path / "h.duckdb")
+    manifest = build_handoff(assessed_db, dest)
+    assert "query_text" in manifest["tables"]["raw.views"]["dropped_unexpected"]
+
+    con = duckdb.connect(dest, read_only=True)
+    try:
+        assert "query_text" not in _cols(con, "raw", "views")
+    finally:
+        con.close()
+
+
+def test_handoff_discloses_unclassified_included_columns(assessed_db, tmp_path):
+    manifest = build_handoff(assessed_db, str(tmp_path / "h2.duckdb"))
+    # every kept column is either classified-and-disclosed or listed as
+    # unclassified — nothing travels invisibly
+    for name, entry in manifest["tables"].items():
+        if not name.startswith("raw."):
+            continue
+        disclosed = {c for cols in entry["sensitive_included"].values() for c in cols}
+        listed = disclosed | set(entry["unclassified_included"])
+        assert listed, name
+
+
+def test_handoff_multidot_destination_name(assessed_db, tmp_path):
+    dest = str(tmp_path / "handoff.v1.duckdb")
+    manifest = build_handoff(assessed_db, dest)
+    con = duckdb.connect(dest, read_only=True)
+    try:
+        assert con.execute("SELECT count(*) FROM raw.tables").fetchone()[0] > 0
+    finally:
+        con.close()
+    assert manifest["tables"]["raw.tables"]["rows"] > 0
+
+
+def test_handoff_drops_drifted_column_named_in_a_sql_comment(assessed_db, tmp_path):
+    """Fail-closed even against comment words: views.sql *mentions*
+    'source_body' in a comment, which must not whitelist a drifted column
+    of that name (found in review, 2026-08-18)."""
+    con = duckdb.connect(assessed_db)
+    con.execute("ALTER TABLE raw.views ADD COLUMN source_body VARCHAR")
+    con.execute("UPDATE raw.views SET source_body = 'SELECT secret FROM t'")
+    con.close()
+
+    dest = str(tmp_path / "h3.duckdb")
+    manifest = build_handoff(assessed_db, dest)
+    assert "source_body" in manifest["tables"]["raw.views"]["dropped_unexpected"]
+
+    con = duckdb.connect(dest, read_only=True)
+    try:
+        assert "source_body" not in _cols(con, "raw", "views")
+    finally:
+        con.close()
+
+
+def test_projection_parser_reads_aliases_not_keywords():
+    from md_migration_assessment.collect.manifest import EXTRACTORS, load_sql
+    from md_migration_assessment.handoff import _projection_columns
+
+    functions = next(e for e in EXTRACTORS if e.name == "functions")
+    cols = _projection_columns(load_sql("account_usage", functions.account_usage_sql))
+    assert "is_secure" in cols       # CAST(NULL AS VARCHAR) AS is_secure → alias
+    assert "varchar" not in cols     # type keyword must not leak into the allowlist
+    assert "source_body" not in cols
+
+    with pytest.raises(ValueError, match="projection"):
+        _projection_columns("-- no select here")

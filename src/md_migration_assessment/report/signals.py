@@ -183,7 +183,9 @@ SIGNALS: list[Signal] = [
            "upper(coalesce(stage_type, '')) LIKE 'EXTERNAL%'",
            "stage_catalog || '.' || stage_schema || '.' || stage_name",
            catalog_col="stage_catalog"),
-    _probe("data_shares_and_listings", "platform", "listings",
+    _probe("listings", "platform", "listings",
+           "true", "name"),
+    _probe("outbound_shares", "platform", "shares",
            "true", "name"),
 ]
 
@@ -206,6 +208,8 @@ class PlannedSignal:
 PLANNED_SIGNALS: list[PlannedSignal] = [
     PlannedSignal("streams", "platform",
                   "no ACCOUNT_USAGE view; needs SHOW STREAMS IN ACCOUNT"),
+    PlannedSignal("inbound_shares", "platform",
+                  "ACCOUNT_USAGE.SHARES covers outbound only; inbound needs SHOW SHARES"),
     PlannedSignal("external_tables", "table_layout",
                   "no ACCOUNT_USAGE view; needs per-database INFORMATION_SCHEMA.EXTERNAL_TABLES"),
     PlannedSignal("warehouses", "platform",
