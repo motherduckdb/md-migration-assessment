@@ -50,6 +50,11 @@ def _projection_columns(sql: str) -> set[str]:
     pass-through.
     """
     text = " ".join(line.split("--")[0] for line in sql.splitlines())
+    # Blank out single-quoted string literals ('' escapes included) before
+    # scanning: a paren or the word FROM inside a literal (e.g. a regex
+    # pattern in the dialect-constructs extract) must not derail depth
+    # tracking or the projection split. Aliases never live inside literals.
+    text = re.sub(r"'(?:[^']|'')*'", "''", text)
     sel = _SELECT_RE.search(text)
     if not sel:
         raise ValueError("extract SQL has no SELECT")

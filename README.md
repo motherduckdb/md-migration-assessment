@@ -37,12 +37,16 @@ md-assess report  --db assessment.duckdb
 ```
 
 Profiles: `lite` (INFORMATION_SCHEMA only, any role), `standard` (requires
-ACCOUNT_USAGE access), `full` (adds the workload time series: warehouse
-metering and load, daily metering by service, copy/pipe/task history, and a
-login-derived client/driver inventory — all hour/day-grained aggregates whose
-size scales with catalog and warehouse count, not query volume). Per-query
-QUERY_HISTORY is deliberately not collected by any profile; it is planned as a
-separate explicit opt-in with its own volume guardrails. `--history-days`
+ACCOUNT_USAGE access), `full` (adds the workload story: warehouse metering and
+load, daily metering by service, copy/pipe/task history, a login-derived
+client/driver inventory, and server-side aggregates over QUERY_HISTORY —
+concurrency peaks, tool fingerprints, anonymous query shapes, type/spill/bytes
+rollups, and dialect-construct counts). Per-query rows and workload query text
+are **never** collected by any profile: the QUERY_HISTORY extracts run their
+GROUP BY inside Snowflake, so only counts, opaque hashes, and derived labels
+land — output size scales with catalog, warehouses, and wall-clock time, not
+query volume. The aggregate scans run on your warehouse (an X-Small suffices;
+compute cost scales with your own history volume). `--history-days`
 (default 30, max 365) sets the workload extracts' lookback window.
 A partial collection is always a valid output: every extractor records its coverage
 in `meta.extract_runs`, and missing evidence is never presented as an observed zero.
@@ -111,6 +115,12 @@ any role and report the objects that role can see.
 | pipe_usage_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER + SNOWFLAKE.OBJECT_VIEWER | Standard |
 | task_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
 | login_history | full | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
+| query_concurrency | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| query_tag_fingerprints | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| client_app_fingerprints | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER + SNOWFLAKE.SECURITY_VIEWER | Standard |
+| query_shapes | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| query_workload_rollup | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| query_dialect_constructs | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
 
 The `lite` profile needs no ACCOUNT_USAGE access at all: any role sees its own
 objects through per-database INFORMATION_SCHEMA walks.

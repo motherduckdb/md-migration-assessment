@@ -8,6 +8,10 @@ import pytest
 from md_migration_assessment.collect.snowflake import SessionInfo
 
 _AU_RE = re.compile(r"snowflake\.account_usage\.(\w+)", re.IGNORECASE)
+# Several M3c aggregate extracts read the same view (QUERY_HISTORY), so the
+# view name no longer identifies the extract; those SQL files carry an
+# explicit marker comment the fake dispatches on first.
+_MARKER_RE = re.compile(r"--\s*md-assess-extract:\s*(\w+)")
 _IS_RE = re.compile(r'FROM\s+"((?:[^"]|"")+)"\.information_schema\.(\w+)', re.IGNORECASE)
 
 #: INFORMATION_SCHEMA view -> extractor/table name where they differ.
@@ -43,6 +47,13 @@ class FakeSource:
 
     def reader(self, sql: str):
         self.queries.append(sql)
+        m = _MARKER_RE.search(sql)
+        if m:
+            name = m.group(1).lower()
+            result = self.account_usage.get(name, small_table())
+            if isinstance(result, Exception):
+                raise result
+            return result
         m = _AU_RE.search(sql)
         if m:
             name = m.group(1).lower()

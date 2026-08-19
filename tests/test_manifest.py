@@ -21,7 +21,10 @@ def test_sql_resources_load_and_have_placeholders(ex):
     if ex.account_usage_sql:
         sql = load_sql("account_usage", ex.account_usage_sql)
         assert "{scope_filter}" in sql
-        assert f"account_usage.{ex.name}" in sql.lower()
+        # extracts read the view they are named for, unless they declare a
+        # different source view (M3c aggregates all read QUERY_HISTORY)
+        view = ex.account_usage_view or ex.name
+        assert f"account_usage.{view}" in sql.lower()
         if ex.window_days is not None:
             assert "{window_days}" in sql
     if ex.info_schema_sql:

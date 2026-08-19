@@ -21,7 +21,12 @@ __version__ = "0.1.0.dev0"
 #   rows classified against ACCOUNT_USAGE.PIPES; unmatched rows are
 #   'unclassified' (Iceberg automated refresh, an aged-out pipe, or a pipe
 #   hidden from the collecting role), never presumed Snowpipe.
-RAW_SCHEMA_VERSION = 8
+# v9 (M3c): server-side workload aggregates over QUERY_HISTORY — the GROUP
+#   BY runs inside Snowflake, nothing per-query or textual ever lands
+#   (spec decision 16): query_concurrency, query_tag_fingerprints,
+#   client_app_fingerprints, query_shapes, query_workload_rollup,
+#   query_dialect_constructs.
+RAW_SCHEMA_VERSION = 9
 
 # Version of the meta.* table shapes.
 META_SCHEMA_VERSION = 1

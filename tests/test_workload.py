@@ -22,6 +22,7 @@ WORKLOAD_EXTRACTORS = [e for e in EXTRACTORS if e.category == "workload"]
 WORKLOAD_NAMES = {e.name for e in WORKLOAD_EXTRACTORS}
 
 EXPECTED_WORKLOAD = {
+    # M3b: aggregate histories
     "warehouse_metering_history",
     "warehouse_load_history",
     "metering_daily_history",
@@ -29,6 +30,13 @@ EXPECTED_WORKLOAD = {
     "pipe_usage_history",
     "task_history",
     "login_history",
+    # M3c: server-side aggregates over QUERY_HISTORY (decision 16)
+    "query_concurrency",
+    "query_tag_fingerprints",
+    "client_app_fingerprints",
+    "query_shapes",
+    "query_workload_rollup",
+    "query_dialect_constructs",
 }
 
 
@@ -65,14 +73,27 @@ def test_workload_extract_set_is_exactly_the_m3b_scope():
     assert WORKLOAD_NAMES == EXPECTED_WORKLOAD
 
 
-def test_no_per_query_history_extract_exists():
-    """Spec decision 15: per-query collection is M3c, off by default."""
+def test_query_history_is_read_only_via_server_side_aggregation():
+    """Spec decision 16: QUERY_HISTORY may only be read by extracts whose
+    GROUP BY runs inside Snowflake, and no per-query or textual column may
+    appear in any projection — nothing per-query ever lands."""
+    from md_migration_assessment.handoff import _projection_columns
+
+    forbidden = {
+        "query_id", "query_text", "query_tag", "session_id", "user_name",
+        "role_name", "client_ip",
+    }
     assert "query_history" not in {e.name for e in EXTRACTORS}
     for ex in EXTRACTORS:
-        if ex.account_usage_sql:
-            sql = load_sql("account_usage", ex.account_usage_sql).lower()
-            assert "account_usage.query_history" not in sql, ex.name
-            assert "query_attribution_history" not in sql, ex.name
+        if not ex.account_usage_sql:
+            continue
+        sql = load_sql("account_usage", ex.account_usage_sql)
+        low = sql.lower()
+        assert "query_attribution_history" not in low, ex.name
+        if "account_usage.query_history" in low:
+            assert "group by" in low, ex.name
+            leaked = _projection_columns(sql) & forbidden
+            assert not leaked, (ex.name, leaked)
 
 
 def test_workload_extracts_are_full_profile_only():
@@ -176,7 +197,9 @@ def test_standard_profile_records_workload_as_not_requested(out_db):
     for name in WORKLOAD_NAMES:
         assert runs[name]["status"] == "not_requested", name
     # and the fact tables still exist, empty — never "relation does not exist"
-    for table in ("spend_profile", "workload_profile", "ingestion_inventory"):
+    for table in ("spend_profile", "workload_profile", "ingestion_inventory",
+                  "concurrency_profile", "tool_fingerprints", "query_shapes",
+                  "workload_rollup", "dialect_constructs"):
         assert out_db.execute(f"SELECT count(*) FROM report.{table}").fetchone()[0] == 0
 
 

@@ -62,6 +62,10 @@ class Extractor:
     #: instead of the fixed default above (spec §2; window_days then documents
     #: the CLI default so the manifest tests keep their placeholder invariant).
     window_from_history_days: bool = False
+    #: the ACCOUNT_USAGE view the extract reads, when it differs from the
+    #: extract name (M3c server-side aggregates: several extracts read
+    #: QUERY_HISTORY). None means the extract name is the view name.
+    account_usage_view: str | None = None
     #: SHOW-command source (e.g. "SHOW STREAMS IN ACCOUNT"). SHOW output is
     #: account-wide and cannot be scope-filtered; columns are server-defined.
     show_sql: str | None = None
@@ -754,6 +758,91 @@ EXTRACTORS: list[Extractor] = [
         window_days=30,
         window_from_history_days=True,
         sensitive_fields={"user_name": PrivacyClass.USER_IDENTITY},
+    ),
+    # ── M3c: server-side workload aggregates over QUERY_HISTORY ─────────
+    # Spec decision 16: the GROUP BY runs inside Snowflake, so nothing
+    # per-query and no query text ever crosses the wire — only counts,
+    # opaque hashes, and derived labels land. Every extract here is
+    # account-wide (QUERY_HISTORY has no reliable database residency; the
+    # collected columns carry no database-resident object names).
+    # View↔role mapping pinned against Snowflake docs 2026-08-19:
+    # QUERY_HISTORY needs GOVERNANCE_VIEWER, SESSIONS needs SECURITY_VIEWER.
+    Extractor(
+        name="query_concurrency",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="query_concurrency.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        account_usage_view="query_history",
+        sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="query_tag_fingerprints",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="query_tag_fingerprints.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        account_usage_view="query_history",
+        sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
+    ),
+    # split from query_tag_fingerprints so a customer withholding
+    # SECURITY_VIEWER (needed for the SESSIONS join) still gets tag-based
+    # tool attribution
+    Extractor(
+        name="client_app_fingerprints",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="client_app_fingerprints.sql",
+        info_schema_sql=None,
+        required_privilege=(
+            "SNOWFLAKE.GOVERNANCE_VIEWER + SNOWFLAKE.SECURITY_VIEWER "
+            "or IMPORTED PRIVILEGES"
+        ),
+        window_days=30,
+        window_from_history_days=True,
+        account_usage_view="query_history",
+        sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="query_shapes",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="query_shapes.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        account_usage_view="query_history",
+        sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="query_workload_rollup",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="query_workload_rollup.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        account_usage_view="query_history",
+        sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="query_dialect_constructs",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="query_dialect_constructs.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        account_usage_view="query_history",
     ),
 ]
 

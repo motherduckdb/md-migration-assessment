@@ -202,7 +202,9 @@ def test_full_profile_workload(tmp_path, source):
     # fact tables must build over whatever landed, and login evidence must
     # be aggregate-shaped (no per-event columns can exist in the raw table)
     build_report(con)
-    for table in ("spend_profile", "workload_profile", "ingestion_inventory"):
+    for table in ("spend_profile", "workload_profile", "ingestion_inventory",
+                  "concurrency_profile", "tool_fingerprints", "query_shapes",
+                  "workload_rollup", "dialect_constructs"):
         n = con.execute(f"SELECT count(*) FROM report.{table}").fetchone()[0]
         print(f"  report.{table}: {n} rows")
     if runs["login_history"]["status"] == "complete" and runs["login_history"]["rows"]:
