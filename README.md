@@ -5,12 +5,7 @@ Assess what a Snowflake → MotherDuck migration entails.
 `md-assess` is a Python CLI you run against your own Snowflake account. It inventories
 the deployment (catalog, features, workload, spend) into a local DuckDB database and
 builds factual summaries: object inventory, sizing, workload profile, feature usage
-counts, and collection coverage — observations only, with provenance.
-
-The scored interpretation (feature-by-feature MotherDuck compatibility, effort tiers,
-cost scenarios) is applied and walked through with you by a MotherDuck engineer — those
-judgments change with every MotherDuck release, so they're kept where someone can keep
-them current and qualify them, rather than baked into this repo.
+counts, and collection coverage, with provenance.
 
 **Status: pre-release (M3b). Feature inventory is complete; workload facts
 come from aggregate histories. Not yet released for customer use.**

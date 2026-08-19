@@ -11,3 +11,6 @@ dist/
 .env*
 .dive-preview/
 *.swp
+
+# spec is MotherDuck-private; lives in the scratchpad, never in this repo
+md-migration-assessment-SPEC.md
