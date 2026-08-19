@@ -1,3 +1,5 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0),
+-- dumper snowflake connector.
 -- procedure_definition is classified source_body (see views.sql note).
 SELECT
     procedure_catalog,

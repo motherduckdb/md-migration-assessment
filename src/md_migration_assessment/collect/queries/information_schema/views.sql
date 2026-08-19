@@ -1,3 +1,5 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0),
+-- dumper snowflake connector.
 -- view_definition is NULL here unless the role owns the view; ACCOUNT_USAGE
 -- is the authoritative source when available.
 SELECT

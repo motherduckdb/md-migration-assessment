@@ -1,3 +1,5 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0),
+-- dumper snowflake connector.
 SELECT
     usage_date,
     average_stage_bytes

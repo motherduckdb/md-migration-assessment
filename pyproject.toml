@@ -4,11 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "md-migration-assessment"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Snowflake -> MotherDuck migration assessment: inventory a Snowflake account into DuckDB and assess what a migration entails."
 readme = "README.md"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+]
 dependencies = [
     "duckdb>=1.3",
     "pyarrow>=16",
@@ -22,6 +29,9 @@ dependencies = [
 dev = [
     "pytest>=8",
 ]
+
+[project.urls]
+Repository = "https://github.com/motherduckdb/md-migration-assessment"
 
 [project.scripts]
 md-assess = "md_migration_assessment.cli:app"
