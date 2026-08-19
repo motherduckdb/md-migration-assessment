@@ -7,11 +7,13 @@
 -- total elapsed time; everything past the cap collapses into one explicit
 -- '(remainder)' row per (query type, warehouse) — n_shapes says how many
 -- collapsed — never silent truncation. Statements Snowflake does not hash
--- aggregate under an explicit '(unhashed)' bucket. Identifying a shape
--- happens on the customer's side in the guided session.
+-- aggregate under an explicit '(unhashed)' bucket, which is EXEMPT from the
+-- cap: ranking is partitioned so unhashed groups never consume hashed rank
+-- slots and can never be absorbed into '(remainder)' on diverse workloads.
+-- Identifying a shape happens on the customer's side in the guided session.
 SELECT
-    IFF(shape_rank <= 5000, shape_key, '(remainder)') AS shape_key,
-    IFF(shape_rank <= 5000, hash_version, NULL) AS query_parameterized_hash_version,
+    IFF(shape_key = '(unhashed)' OR shape_rank <= 5000, shape_key, '(remainder)') AS shape_key,
+    IFF(shape_key = '(unhashed)' OR shape_rank <= 5000, hash_version, NULL) AS query_parameterized_hash_version,
     query_type AS query_type,
     warehouse_name AS warehouse_name,
     count(*) AS n_shapes,
@@ -31,7 +33,12 @@ FROM (
         sum(bytes_scanned) AS sum_bytes_scanned,
         min(start_time) AS first_seen,
         max(start_time) AS last_seen,
-        ROW_NUMBER() OVER (ORDER BY sum(total_elapsed_time) DESC NULLS LAST) AS shape_rank
+        ROW_NUMBER() OVER (
+            -- partition key must be a group-by expression: reuse group key 1
+            PARTITION BY IFF(COALESCE(query_parameterized_hash, '(unhashed)') = '(unhashed)',
+                             'unhashed', 'hashed')
+            ORDER BY sum(total_elapsed_time) DESC NULLS LAST
+        ) AS shape_rank
     FROM snowflake.account_usage.query_history
     WHERE start_time >= DATEADD(day, -{window_days}, CURRENT_TIMESTAMP)
     AND COALESCE(is_client_generated_statement, FALSE) = FALSE

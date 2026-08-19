@@ -301,9 +301,11 @@ WORKLOAD = {
     # ── M3c server-side aggregates: shapes mirror the extract SQL output ──
     "query_concurrency": _t([
         dict(warehouse_name="ETL_WH", hour_start=_ts(9),
-             peak_concurrent_queries=7, active_event_minutes=42),
+             peak_concurrent_queries=7, avg_concurrent_queries=2.4,
+             busy_seconds=1800.0),
         dict(warehouse_name="COMPUTE_WH", hour_start=_ts(9, day=11),
-             peak_concurrent_queries=2, active_event_minutes=11),
+             peak_concurrent_queries=2, avg_concurrent_queries=0.5,
+             busy_seconds=660.0),
     ]),
     "query_tag_fingerprints": _t([
         dict(query_tag_tool="dbt", warehouse_name="ETL_WH",

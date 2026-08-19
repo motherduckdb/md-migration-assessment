@@ -398,14 +398,15 @@ CREATE SCHEMA IF NOT EXISTS report;
 DROP TABLE IF EXISTS report.concurrency_profile;
 CREATE TABLE report.concurrency_profile (
     collection_id UUID, warehouse_name VARCHAR, hour_start TIMESTAMPTZ,
-    peak_concurrent_queries BIGINT, active_event_minutes BIGINT,
-    concurrency_extract_status VARCHAR
+    peak_concurrent_queries BIGINT, avg_concurrent_queries DOUBLE,
+    busy_seconds DOUBLE, concurrency_extract_status VARCHAR
 );
 """
 
 
 def _build_concurrency_profile(con: duckdb.DuckDBPyConnection) -> None:
-    # True hourly peaks from the server-side event sweep. Early-window peaks
+    # Exact hourly peaks from the server-side event sweep over exact
+    # timestamps, hour-complete via boundary carriers. Early-window peaks
     # are floors (queries started before the window contribute no event);
     # the caveat lives in the extract SQL and travels via provenance.
     con.execute(_CONCURRENCY_DDL)
@@ -418,7 +419,8 @@ def _build_concurrency_profile(con: duckdb.DuckDBPyConnection) -> None:
             c.warehouse_name AS warehouse_name,
             c.hour_start::TIMESTAMPTZ AS hour_start,
             c.peak_concurrent_queries::BIGINT AS peak_concurrent_queries,
-            c.active_event_minutes::BIGINT AS active_event_minutes,
+            c.avg_concurrent_queries::DOUBLE AS avg_concurrent_queries,
+            c.busy_seconds::DOUBLE AS busy_seconds,
             r.status AS concurrency_extract_status
         FROM raw.query_concurrency c
         LEFT JOIN meta.extract_runs r

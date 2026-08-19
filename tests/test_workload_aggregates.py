@@ -78,6 +78,34 @@ def test_shapes_cap_is_explicit_never_silent():
     assert "query_text" not in sql.lower()
 
 
+def test_unhashed_bucket_is_exempt_from_the_cap():
+    """The '(unhashed)' bucket must survive regardless of its weight: it is
+    ranked in its own partition (never consuming hashed rank slots) and the
+    cap condition exempts it explicitly (review, 2026-08-19)."""
+    sql = _sql("query_shapes")
+    assert "shape_key = '(unhashed)' OR shape_rank" in sql
+    assert re.search(
+        r"PARTITION BY IFF\(COALESCE\(query_parameterized_hash", sql
+    )
+
+
+def test_concurrency_uses_exact_events_and_hour_boundaries():
+    """Review, 2026-08-19: minute-truncated events counted sequential
+    sub-minute queries as concurrent, and hours spanned by one long query
+    got no rows. Events must be exact timestamps (same-instant ties netted
+    by grouping, so [start, end) intervals never phantom-overlap) and hour
+    boundaries must be materialized so every window hour has a row."""
+    sql = _sql("query_concurrency")
+    low = sql.lower()
+    assert "date_trunc('minute'" not in low       # exact events, no minute grid
+    assert "start_time as event_ts" in low
+    assert "generator" in low                     # hour-boundary carriers
+    assert "group by warehouse_name, event_ts" in low  # same-instant netting
+    cols = _projection_columns(sql)
+    assert {"peak_concurrent_queries", "avg_concurrent_queries",
+            "busy_seconds"} <= cols
+
+
 def test_dialect_scan_keeps_text_inside_aggregates():
     """query_text may appear only inside count_if(...) predicates — the
     projection itself was checked above; this pins the mechanism."""
@@ -109,16 +137,16 @@ def test_concurrency_profile_fact(out_db):
     coll, _ = collect(out_db)
     rows = out_db.execute(
         """
-        SELECT warehouse_name, peak_concurrent_queries, active_event_minutes,
-               concurrency_extract_status
+        SELECT warehouse_name, peak_concurrent_queries, avg_concurrent_queries,
+               busy_seconds, concurrency_extract_status
         FROM report.concurrency_profile WHERE collection_id = ?
         ORDER BY warehouse_name
         """,
         [str(coll.collection_id)],
     ).fetchall()
     assert rows == [
-        ("COMPUTE_WH", 2, 11, "complete"),
-        ("ETL_WH", 7, 42, "complete"),
+        ("COMPUTE_WH", 2, 0.5, 660.0, "complete"),
+        ("ETL_WH", 7, 2.4, 1800.0, "complete"),
     ]
 
 
