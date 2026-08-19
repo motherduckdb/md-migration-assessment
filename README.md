@@ -20,16 +20,49 @@ in; delivery (upload, Dive, Flight) is next. Not yet released for customer use.*
 
 ## Quickstart (local mode)
 
-```bash
-export SNOWFLAKE_ACCOUNT=...
-export SNOWFLAKE_USER=...
-export SNOWFLAKE_PASSWORD=...        # or SNOWFLAKE_PRIVATE_KEY_PATH
-export SNOWFLAKE_WAREHOUSE=...
-export SNOWFLAKE_ROLE=...            # optional
+Requires Python 3.10+ and read access to this repository (git authenticates
+with your normal GitHub credentials). Fill in the three `<...>` values, then
+the whole block runs as-is:
 
+```bash
+# 1. Install uv (skip if you already have uv, or see the pip variant below)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. Install the collector as a CLI tool
+uv tool install git+https://github.com/motherduckdb/md-migration-assessment.git
+
+# 3. Snowflake connection — env vars only, nothing is written to disk
+export SNOWFLAKE_ACCOUNT="<orgname-accountname>"   # e.g. myorg-myaccount
+export SNOWFLAKE_USER="<username>"
+export SNOWFLAKE_PASSWORD="<password>"             # or key pair: see below
+export SNOWFLAKE_WAREHOUSE="<any_small_warehouse>" # X-Small is enough
+export SNOWFLAKE_ROLE="<role>"                     # optional; omit for default
+
+# 4. Collect into a local DuckDB file and print the summary
 md-assess collect --profile standard --output assessment.duckdb
 md-assess report  --db assessment.duckdb
 ```
+
+Key-pair auth instead of a password: set `SNOWFLAKE_PRIVATE_KEY_PATH` (and
+`SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` if the key is encrypted) and skip
+`SNOWFLAKE_PASSWORD`. External browser SSO: set
+`SNOWFLAKE_AUTHENTICATOR=externalbrowser` and skip the password.
+
+Without uv, any of these work in its place:
+
+```bash
+pipx install git+https://github.com/motherduckdb/md-migration-assessment.git
+# or, into an existing virtualenv:
+pip install git+https://github.com/motherduckdb/md-migration-assessment.git
+# or, hacking on the repo itself:
+git clone https://github.com/motherduckdb/md-migration-assessment.git
+cd md-migration-assessment && uv run md-assess --help
+```
+
+The output is a single local `assessment.duckdb` (mode `0600`) you can open
+with any DuckDB client — the interesting tables are `report.*` (facts),
+`raw.*` (evidence), and `meta.extract_runs` (per-extractor coverage).
+Collection makes no network calls except to Snowflake.
 
 Two profiles: `lite` (INFORMATION_SCHEMA and SHOW only — any role, no
 ACCOUNT_USAGE access needed) and `standard` (the complete assessment:
