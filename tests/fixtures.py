@@ -4,6 +4,8 @@ must be excluded from counts)."""
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
 import pyarrow as pa
 
 
@@ -202,6 +204,77 @@ REALISTIC = {
         dict(name="ACCOUNTADMIN", owner=None, role_type="ROLE", comment=None),
         dict(name="ANALYST", owner="SECURITYADMIN", role_type="ROLE", comment=None),
         dict(name="DB_ROLE", owner="X", role_type="DATABASE_ROLE", comment=None),
+    ]),
+}
+
+
+def _ts(hour: int, day: int = 10) -> datetime:
+    return datetime(2026, 8, day, hour, 0, 0)
+
+
+#: M3b workload extracts (full profile only): shapes mirror the aggregated
+#: extract SQL projections, not the underlying Snowflake views.
+WORKLOAD = {
+    "warehouse_metering_history": _t([
+        dict(start_time=_ts(9), end_time=_ts(10), warehouse_name="ETL_WH",
+             credits_used=1.5, credits_used_compute=1.4,
+             credits_used_cloud_services=0.1),
+        dict(start_time=_ts(10), end_time=_ts(11), warehouse_name="ETL_WH",
+             credits_used=0.5, credits_used_compute=0.5,
+             credits_used_cloud_services=0.0),
+        dict(start_time=_ts(9, day=11), end_time=_ts(10, day=11),
+             warehouse_name="COMPUTE_WH", credits_used=0.25,
+             credits_used_compute=0.2, credits_used_cloud_services=0.05),
+    ]),
+    "warehouse_load_history": _t([
+        dict(hour_start=_ts(9), warehouse_name="ETL_WH", avg_running=2.5,
+             avg_queued_load=0.2, avg_queued_provisioning=0.0, avg_blocked=0.0,
+             peak_avg_running=4.0, n_intervals=12),
+        dict(hour_start=_ts(9, day=11), warehouse_name="COMPUTE_WH",
+             avg_running=0.5, avg_queued_load=0.0, avg_queued_provisioning=0.0,
+             avg_blocked=0.0, peak_avg_running=1.0, n_intervals=12),
+    ]),
+    "metering_daily_history": _t([
+        dict(usage_date=date(2026, 8, 10), service_type="WAREHOUSE_METERING",
+             credits_used_compute=10.0, credits_used_cloud_services=1.0,
+             credits_used=11.0, credits_adjustment_cloud_services=-0.2,
+             credits_billed=10.8),
+        dict(usage_date=date(2026, 8, 10), service_type="PIPE",
+             credits_used_compute=0.3, credits_used_cloud_services=0.0,
+             credits_used=0.3, credits_adjustment_cloud_services=0.0,
+             credits_billed=0.3),
+    ]),
+    "copy_history": _t([
+        dict(table_catalog="APPDB", table_schema="S1", table_name="PLAIN",
+             load_date=date(2026, 8, 10), load_method="snowpipe", n_files=24,
+             rows_loaded=24000, bytes_loaded=48000, n_files_with_errors=0,
+             first_load_time=_ts(0), last_load_time=_ts(23)),
+        dict(table_catalog="APPDB", table_schema="S1", table_name="PLAIN",
+             load_date=date(2026, 8, 11), load_method="snowpipe", n_files=24,
+             rows_loaded=24000, bytes_loaded=48000, n_files_with_errors=1,
+             first_load_time=_ts(0, day=11), last_load_time=_ts(23, day=11)),
+        dict(table_catalog="APPDB", table_schema="S1", table_name="ORDERS",
+             load_date=date(2026, 8, 11), load_method="copy_into", n_files=1,
+             rows_loaded=500, bytes_loaded=9000, n_files_with_errors=0,
+             first_load_time=_ts(2, day=11), last_load_time=_ts(2, day=11)),
+    ]),
+    "pipe_usage_history": _t([
+        dict(pipe_name="APPDB.S1.LOAD_EVENTS", usage_date=date(2026, 8, 10),
+             credits_used=0.3, bytes_inserted=48000, files_inserted=24,
+             n_intervals=10),
+    ]),
+    "task_history": _t([
+        dict(task_database="APPDB", task_schema="S1",
+             task_name="NIGHTLY_ROLLUP", run_date=date(2026, 8, 10), n_runs=1,
+             n_succeeded=1, n_failed=0, first_scheduled_time=_ts(2),
+             last_scheduled_time=_ts(2)),
+    ]),
+    "login_history": _t([
+        dict(user_name="ETL_SVC", client_type="PYTHON_DRIVER",
+             client_version="3.12.0", n_logins=48, n_successful=48,
+             first_seen=_ts(0), last_seen=_ts(23, day=11)),
+        dict(user_name="JANE", client_type="SNOWFLAKE_UI", client_version=None,
+             n_logins=5, n_successful=5, first_seen=_ts(8), last_seen=_ts(18)),
     ]),
 }
 

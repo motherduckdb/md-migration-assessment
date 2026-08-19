@@ -114,10 +114,12 @@ def test_standard_profile(tmp_path, source):
     assert not failed, f"failed extractors: {failed}"
 
     for ex in EXTRACTORS:
-        assert runs[ex.name]["status"] in ("complete", "partial", "unavailable"), (
-            ex.name,
-            runs[ex.name],
-        )
+        allowed = ("complete", "partial", "unavailable")
+        if ex.min_profile > Profile.STANDARD:
+            # M3b workload extracts are full-profile only and must be
+            # visibly not_requested here, never silently absent
+            allowed = ("not_requested",)
+        assert runs[ex.name]["status"] in allowed, (ex.name, runs[ex.name])
 
     # feature inventory: every signal gets a row and no probe may crash on
     # real data (a probe failure = column-shape drift between probe and raw)
@@ -170,6 +172,49 @@ def test_standard_profile(tmp_path, source):
     for table, predicate in named_fixtures:
         n = con.execute(f"SELECT count(*) FROM {table} WHERE {predicate}").fetchone()[0]
         assert n >= 1, f"named seed fixture missing: {table} WHERE {predicate}"
+    con.close()
+
+
+def test_full_profile_workload(tmp_path, source):
+    """M3b: workload extracts must run clean against real ACCOUNT_USAGE.
+
+    Row counts are activity-dependent (metering lags a few hours), so this
+    asserts statuses and shape, never volume — a zero-row complete extract
+    is latency, a 'failed' one is column drift or a broken aggregate.
+    """
+    from md_migration_assessment.report import build_report
+
+    con = open_output(str(tmp_path / "full.duckdb"))
+    coll = run_collection(con, source, profile=Profile.FULL, history_days=30)
+    runs = _runs(con, coll)
+    _print_report(runs)
+
+    failed = {n: r for n, r in runs.items() if r["status"] == "failed"}
+    assert not failed, f"failed extractors: {failed}"
+
+    workload = [ex for ex in EXTRACTORS if ex.category == "workload"]
+    for ex in workload:
+        assert runs[ex.name]["status"] in ("complete", "partial", "unavailable"), (
+            ex.name,
+            runs[ex.name],
+        )
+
+    # fact tables must build over whatever landed, and login evidence must
+    # be aggregate-shaped (no per-event columns can exist in the raw table)
+    build_report(con)
+    for table in ("spend_profile", "workload_profile", "ingestion_inventory"):
+        n = con.execute(f"SELECT count(*) FROM report.{table}").fetchone()[0]
+        print(f"  report.{table}: {n} rows")
+    if runs["login_history"]["status"] == "complete" and runs["login_history"]["rows"]:
+        cols = {
+            r[0].lower()
+            for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'raw' AND table_name = 'login_history'"
+            ).fetchall()
+        }
+        assert "client_ip" not in cols and "event_id" not in cols
+        assert "n_logins" in cols
     con.close()
 
 

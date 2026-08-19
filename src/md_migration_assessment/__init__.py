@@ -11,7 +11,10 @@ __version__ = "0.1.0.dev0"
 # v5 (M3a): external_tables, usage-history feature extracts, SHOW-based
 #   extracts (streams, warehouses, streamlits, notebooks, applications,
 #   application packages, catalog integrations, shares listing).
-RAW_SCHEMA_VERSION = 5
+# v6 (M3b): aggregate workload extracts (warehouse metering/load, daily
+#   metering, copy/pipe/task history, login-derived driver inventory).
+#   Per-query QUERY_HISTORY is deliberately absent (spec decision 15).
+RAW_SCHEMA_VERSION = 6
 
 # Version of the meta.* table shapes.
 META_SCHEMA_VERSION = 1

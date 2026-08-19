@@ -1,9 +1,10 @@
 """The factual report layer (public half of the assessment, spec §5).
 
-``build_report`` materializes ``report.feature_inventory`` and
-``report.sizing`` for every collection in the database. Facts only — no
-compatibility ratings, no effort scores; those are applied by the internal
-overlay.
+``build_report`` materializes ``report.feature_inventory``, ``report.sizing``,
+and the M3b workload facts (``report.spend_profile``,
+``report.workload_profile``, ``report.ingestion_inventory``) for every
+collection in the database. Facts only — no compatibility ratings, no effort
+scores; those are applied by the internal overlay.
 
 Observation-status contract (spec §5): every feature row states how it was
 observed, and missing evidence is never presented as zero:
@@ -147,6 +148,9 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
             summary["unknown"] += 1
 
     _build_sizing(con)
+    _build_spend_profile(con)
+    _build_workload_profile(con)
+    _build_ingestion_inventory(con)
     return summary
 
 
@@ -209,4 +213,163 @@ def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
             ON sr.collection_id = t.collection_id AND sr.extractor = 'table_storage_metrics'
         {storage_join}
         WHERE t.table_type IN ('BASE TABLE', 'MATERIALIZED VIEW')
+    """)
+
+
+# ── M3b: workload facts from aggregate histories (spec §5.3 as amended) ────
+# Per-query facts (query-type mix, bytes-scanned percentiles, per-minute
+# concurrency, spill rates) are deliberately absent until M3c (decision 15).
+# Like sizing, these relations always exist with a stable shape; when the
+# source extracts are missing (e.g. a standard-profile collection) they are
+# empty and meta.extract_runs says why.
+
+_SPEND_DDL = """
+CREATE SCHEMA IF NOT EXISTS report;
+DROP TABLE IF EXISTS report.spend_profile;
+CREATE TABLE report.spend_profile (
+    collection_id UUID, warehouse_name VARCHAR, usage_date DATE,
+    credits_used DOUBLE, credits_used_compute DOUBLE,
+    credits_used_cloud_services DOUBLE,
+    metering_extract_status VARCHAR
+);
+"""
+
+
+def _build_spend_profile(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(_SPEND_DDL)
+    if not _table_exists(con, "raw", "warehouse_metering_history"):
+        return
+    con.execute("""
+        INSERT INTO report.spend_profile BY NAME
+        SELECT
+            m.collection_id AS collection_id,
+            m.warehouse_name AS warehouse_name,
+            CAST(m.start_time AS DATE) AS usage_date,
+            sum(m.credits_used)::DOUBLE AS credits_used,
+            sum(m.credits_used_compute)::DOUBLE AS credits_used_compute,
+            sum(m.credits_used_cloud_services)::DOUBLE AS credits_used_cloud_services,
+            r.status AS metering_extract_status
+        FROM raw.warehouse_metering_history m
+        LEFT JOIN meta.extract_runs r
+            ON r.collection_id = m.collection_id
+            AND r.extractor = 'warehouse_metering_history'
+        GROUP BY ALL
+    """)
+
+
+_WORKLOAD_DDL = """
+CREATE SCHEMA IF NOT EXISTS report;
+DROP TABLE IF EXISTS report.workload_profile;
+CREATE TABLE report.workload_profile (
+    collection_id UUID, warehouse_name VARCHAR, hour_start TIMESTAMPTZ,
+    avg_running DOUBLE, avg_queued_load DOUBLE, avg_queued_provisioning DOUBLE,
+    avg_blocked DOUBLE, peak_avg_running DOUBLE, credits_used DOUBLE,
+    load_extract_status VARCHAR, metering_extract_status VARCHAR
+);
+"""
+
+
+def _build_workload_profile(con: duckdb.DuckDBPyConnection) -> None:
+    # Warehouse-hour grain: averages of the source view's interval averages.
+    # peak_avg_running is an interval-averaged floor for the true peak — real
+    # per-minute concurrency peaks need per-query events (M3c).
+    con.execute(_WORKLOAD_DDL)
+    if not _table_exists(con, "raw", "warehouse_load_history"):
+        return
+    credits_col = "CAST(NULL AS DOUBLE) AS credits_used"
+    metering_join = ""
+    if _table_exists(con, "raw", "warehouse_metering_history"):
+        credits_col = "m.credits_used::DOUBLE AS credits_used"
+        metering_join = (
+            "LEFT JOIN raw.warehouse_metering_history m "
+            "ON m.collection_id = l.collection_id "
+            "AND m.warehouse_name = l.warehouse_name "
+            "AND date_trunc('hour', m.start_time::TIMESTAMPTZ) = l.hour_start::TIMESTAMPTZ"
+        )
+    con.execute(f"""
+        INSERT INTO report.workload_profile BY NAME
+        SELECT
+            l.collection_id AS collection_id,
+            l.warehouse_name AS warehouse_name,
+            l.hour_start::TIMESTAMPTZ AS hour_start,
+            l.avg_running::DOUBLE AS avg_running,
+            l.avg_queued_load::DOUBLE AS avg_queued_load,
+            l.avg_queued_provisioning::DOUBLE AS avg_queued_provisioning,
+            l.avg_blocked::DOUBLE AS avg_blocked,
+            l.peak_avg_running::DOUBLE AS peak_avg_running,
+            {credits_col},
+            lr.status AS load_extract_status,
+            coalesce(mr.status, 'unavailable') AS metering_extract_status
+        FROM raw.warehouse_load_history l
+        LEFT JOIN meta.extract_runs lr
+            ON lr.collection_id = l.collection_id
+            AND lr.extractor = 'warehouse_load_history'
+        LEFT JOIN meta.extract_runs mr
+            ON mr.collection_id = l.collection_id
+            AND mr.extractor = 'warehouse_metering_history'
+        {metering_join}
+    """)
+
+
+_INGESTION_DDL = """
+CREATE SCHEMA IF NOT EXISTS report;
+DROP TABLE IF EXISTS report.ingestion_inventory;
+CREATE TABLE report.ingestion_inventory (
+    collection_id UUID, table_catalog VARCHAR, table_schema VARCHAR,
+    table_name VARCHAR, load_method VARCHAR,
+    days_with_writes BIGINT, total_files BIGINT, total_rows_loaded BIGINT,
+    total_bytes_loaded BIGINT, files_per_observed_day DOUBLE,
+    first_load_time TIMESTAMPTZ, last_load_time TIMESTAMPTZ,
+    detection_method VARCHAR, confidence VARCHAR,
+    supporting_event_count BIGINT,
+    window_start TIMESTAMPTZ, window_end TIMESTAMPTZ,
+    last_observed_at TIMESTAMPTZ,
+    copy_history_extract_status VARCHAR, note VARCHAR
+);
+"""
+
+# Every inferred row carries provenance (spec §3): here detection is
+# authoritative load metadata, so confidence is 'high'. No stale_candidate
+# labels in M3b: absence of COPY/Snowpipe writes does not mean an unwritten
+# table (MERGE/INSERT/CTAS cadence needs per-query history — M3c).
+_INGESTION_NOTE = (
+    "authoritative copy/snowpipe load metadata; MERGE/INSERT/CTAS write "
+    "cadence requires per-query history (M3c) and is not_requested in this "
+    "collection"
+)
+
+
+def _build_ingestion_inventory(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(_INGESTION_DDL)
+    if not _table_exists(con, "raw", "copy_history"):
+        return
+    con.execute(f"""
+        INSERT INTO report.ingestion_inventory BY NAME
+        SELECT
+            c.collection_id AS collection_id,
+            c.table_catalog AS table_catalog,
+            c.table_schema AS table_schema,
+            c.table_name AS table_name,
+            c.load_method AS load_method,
+            count(DISTINCT c.load_date)::BIGINT AS days_with_writes,
+            sum(c.n_files)::BIGINT AS total_files,
+            sum(c.rows_loaded)::BIGINT AS total_rows_loaded,
+            sum(c.bytes_loaded)::BIGINT AS total_bytes_loaded,
+            (sum(c.n_files)::DOUBLE / greatest(1, count(DISTINCT c.load_date)))
+                AS files_per_observed_day,
+            min(c.first_load_time)::TIMESTAMPTZ AS first_load_time,
+            max(c.last_load_time)::TIMESTAMPTZ AS last_load_time,
+            'copy_history' AS detection_method,
+            'high' AS confidence,
+            sum(c.n_files)::BIGINT AS supporting_event_count,
+            any_value(r.actual_window_start)::TIMESTAMPTZ AS window_start,
+            any_value(r.actual_window_end)::TIMESTAMPTZ AS window_end,
+            max(c.last_load_time)::TIMESTAMPTZ AS last_observed_at,
+            any_value(r.status) AS copy_history_extract_status,
+            '{_INGESTION_NOTE}' AS note
+        FROM raw.copy_history c
+        LEFT JOIN meta.extract_runs r
+            ON r.collection_id = c.collection_id AND r.extractor = 'copy_history'
+        GROUP BY c.collection_id, c.table_catalog, c.table_schema,
+                 c.table_name, c.load_method
     """)

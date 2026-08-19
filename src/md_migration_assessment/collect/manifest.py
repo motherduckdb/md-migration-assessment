@@ -58,6 +58,10 @@ class Extractor:
     sensitive_fields: dict[str, PrivacyClass] = field(default_factory=dict)
     #: for time-windowed extracts: default lookback, substituted as {window_days}.
     window_days: int | None = None
+    #: workload time-series extracts take their window from --history-days
+    #: instead of the fixed default above (spec §2; window_days then documents
+    #: the CLI default so the manifest tests keep their placeholder invariant).
+    window_from_history_days: bool = False
     #: SHOW-command source (e.g. "SHOW STREAMS IN ACCOUNT"). SHOW output is
     #: account-wide and cannot be scope-filtered; columns are server-defined.
     show_sql: str | None = None
@@ -643,6 +647,97 @@ EXTRACTORS: list[Extractor] = [
             "role_database_name": PrivacyClass.OBJECT_NAME,
             "comment": PrivacyClass.COMMENT,
         },
+    ),
+    # ── M3b: workload shape from aggregate histories ────────────────────
+    # Per-query QUERY_HISTORY is deliberately not collected (spec decision
+    # 15): these extracts are hour/day-grained aggregates whose size scales
+    # with catalog and warehouse count, never with query volume. View↔role
+    # mapping pinned against Snowflake docs 2026-08-19.
+    Extractor(
+        name="warehouse_metering_history",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="warehouse_metering_history.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="warehouse_load_history",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="warehouse_load_history.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="metering_daily_history",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="metering_daily_history.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+    ),
+    Extractor(
+        name="copy_history",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="copy_history.sql",
+        info_schema_sql=None,
+        scope_columns={"database": "table_catalog_name", "schema": "table_schema_name"},
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        sensitive_fields={
+            "table_catalog": PrivacyClass.OBJECT_NAME,
+            "table_schema": PrivacyClass.OBJECT_NAME,
+            "table_name": PrivacyClass.OBJECT_NAME,
+        },
+    ),
+    Extractor(
+        name="pipe_usage_history",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="pipe_usage_history.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        sensitive_fields={"pipe_name": PrivacyClass.OBJECT_NAME},
+    ),
+    Extractor(
+        name="task_history",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="task_history.sql",
+        info_schema_sql=None,
+        scope_columns={"database": "database_name", "schema": "schema_name"},
+        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        sensitive_fields={
+            "task_database": PrivacyClass.OBJECT_NAME,
+            "task_schema": PrivacyClass.OBJECT_NAME,
+            "task_name": PrivacyClass.OBJECT_NAME,
+        },
+    ),
+    Extractor(
+        name="login_history",
+        category="workload",
+        min_profile=Profile.FULL,
+        account_usage_sql="login_history.sql",
+        info_schema_sql=None,
+        required_privilege="SNOWFLAKE.SECURITY_VIEWER or IMPORTED PRIVILEGES",
+        window_days=30,
+        window_from_history_days=True,
+        sensitive_fields={"user_name": PrivacyClass.USER_IDENTITY},
     ),
 ]
 

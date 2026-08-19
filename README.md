@@ -12,7 +12,8 @@ cost scenarios) is applied and walked through with you by a MotherDuck engineer 
 judgments change with every MotherDuck release, so they're kept where someone can keep
 them current and qualify them, rather than baked into this repo.
 
-**Status: pre-release scaffolding (M1). Not yet usable for real assessments.**
+**Status: pre-release (M3b). Feature inventory is complete; workload facts
+come from aggregate histories. Not yet released for customer use.**
 
 ## Trust model
 
@@ -36,7 +37,13 @@ md-assess report  --db assessment.duckdb
 ```
 
 Profiles: `lite` (INFORMATION_SCHEMA only, any role), `standard` (requires
-ACCOUNT_USAGE access), `full` (adds query history and metering time series).
+ACCOUNT_USAGE access), `full` (adds the workload time series: warehouse
+metering and load, daily metering by service, copy/pipe/task history, and a
+login-derived client/driver inventory — all hour/day-grained aggregates whose
+size scales with catalog and warehouse count, not query volume). Per-query
+QUERY_HISTORY is deliberately not collected by any profile; it is planned as a
+separate explicit opt-in with its own volume guardrails. `--history-days`
+(default 30, max 365) sets the workload extracts' lookback window.
 A partial collection is always a valid output: every extractor records its coverage
 in `meta.extract_runs`, and missing evidence is never presented as an observed zero.
 
@@ -97,6 +104,13 @@ any role and report the objects that role can see.
 | catalog_integrations | standard | SHOW | any role (integrations visible to the role) | Standard |
 | show_shares | standard | SHOW | any role (shares visible to the role) | Standard |
 | roles | standard | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
+| warehouse_metering_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| warehouse_load_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| metering_daily_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| copy_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| pipe_usage_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| task_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| login_history | full | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
 
 The `lite` profile needs no ACCOUNT_USAGE access at all: any role sees its own
 objects through per-database INFORMATION_SCHEMA walks.

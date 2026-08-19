@@ -207,14 +207,20 @@ def run_collection(
     db.begin_collection(con, coll)
 
     for ex in EXTRACTORS:
-        run = _run_extractor(con, source, coll, ex, profile, scope)
+        run = _run_extractor(con, source, coll, ex, profile, scope, history_days)
         db.record_extract_run(con, coll, run)
 
     db.finish_collection(con, coll)
     return coll
 
 
-def _base_run(ex: Extractor, scope: Scope | None) -> ExtractRun:
+def _effective_window(ex: Extractor, history_days: int) -> int | None:
+    """Workload time-series extracts take their window from --history-days;
+    everything else keeps its fixed manifest default."""
+    return history_days if ex.window_from_history_days else ex.window_days
+
+
+def _base_run(ex: Extractor, scope: Scope | None, window_days: int | None) -> ExtractRun:
     return ExtractRun(
         extractor=ex.name,
         extractor_version=extractor_version(ex),
@@ -222,7 +228,7 @@ def _base_run(ex: Extractor, scope: Scope | None) -> ExtractRun:
         status="failed",  # overwritten below
         started_at=utcnow(),
         requested_scope=scope.as_list() if scope else None,
-        requested_window_days=ex.window_days,
+        requested_window_days=window_days,
         required_privilege=ex.required_privilege,
         min_edition=ex.min_edition,
     )
@@ -235,8 +241,10 @@ def _run_extractor(
     ex: Extractor,
     profile: Profile,
     scope: Scope | None,
+    history_days: int,
 ) -> ExtractRun:
-    run = _base_run(ex, scope)
+    window_days = _effective_window(ex, history_days)
+    run = _base_run(ex, scope, window_days)
 
     if profile < ex.min_profile:
         run.status = "not_requested"
@@ -345,16 +353,16 @@ def _run_extractor(
             sql = _render(
                 load_sql("account_usage", ex.account_usage_sql),
                 scope_pred=scope_pred,
-                window_days=ex.window_days,
+                window_days=window_days,
             )
             ing = _Ingestor(con, coll, ex.target_table)
             ing.ingest(source.reader(sql))
             run.rows_written = ing.finish()
             run.status = "complete"
             run.source_used = "account_usage"
-            if ex.window_days is not None:
+            if window_days is not None:
                 run.actual_window_end = utcnow()
-                run.actual_window_start = run.actual_window_end - timedelta(days=ex.window_days)
+                run.actual_window_start = run.actual_window_end - timedelta(days=window_days)
             return run
         except Exception as exc:  # noqa: BLE001 — every failure becomes coverage metadata
             au_error = exc
@@ -396,7 +404,7 @@ def _run_extractor(
                 sql = _render(
                     load_sql("information_schema", ex.info_schema_sql),
                     scope_pred=scope_pred,
-                    window_days=ex.window_days,
+                    window_days=window_days,
                     database=database,
                 )
                 ing.ingest(source.reader(sql))
