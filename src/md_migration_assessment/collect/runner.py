@@ -238,6 +238,12 @@ def run_collection(
         profile = Profile.parse(coll.profile)
         scope = Scope.parse(coll.scope)
         history_days = coll.history_days
+        # A finished collection is still resumable (retrying failed or
+        # unavailable extractors after grants are fixed); reopen it BEFORE
+        # re-running anything so an interrupted retry can never leave a
+        # 'finished' collection containing interrupted extractors
+        # (review, 2026-08-19). finish_collection re-stamps it at the end.
+        db.reopen_collection(con, coll)
         prior = {
             r[0]: r[1]
             for r in con.execute(
@@ -278,68 +284,76 @@ def run_collection(
         db.begin_collection(con, coll)
         prior = {}
 
-    total = len(EXTRACTORS)
-    for i, ex in enumerate(EXTRACTORS):
-        prior_status = prior.get(ex.name)
-        if prior_status in _RESUME_KEEP:
-            _emit(progress, f"[{i + 1}/{total}] {ex.name}: skipped "
-                            f"({prior_status} in existing collection)")
-            continue
-        if prior_status is not None:
-            db.delete_extract_run(con, coll, ex.name)
-        _emit(progress, f"[{i + 1}/{total}] {ex.name}: running")
-        try:
+    # The interrupt guard wraps the WHOLE orchestration, not just extractor
+    # execution: a Ctrl+C during a progress write, a coverage-row insert, or
+    # finish_collection must still leave every extractor with a coverage row
+    # (review, 2026-08-19). The handler repairs after the fact rather than
+    # tracking position: any extractor missing a row gets 'interrupted'.
+    try:
+        total = len(EXTRACTORS)
+        for i, ex in enumerate(EXTRACTORS):
+            prior_status = prior.get(ex.name)
+            if prior_status in _RESUME_KEEP:
+                _emit(progress, f"[{i + 1}/{total}] {ex.name}: skipped "
+                                f"({prior_status} in existing collection)")
+                continue
+            if prior_status is not None:
+                # replace, never accrete: the old coverage row goes and so
+                # does the old raw evidence — a retry that fails before
+                # ingesting must not leave stale rows behind a failed
+                # status (review, 2026-08-19)
+                db.delete_extract_run(con, coll, ex.name)
+                if not _IDENTIFIER_RE.match(ex.target_table):
+                    raise ValueError(f"bad target table name {ex.target_table!r}")
+                con.execute(f'DROP TABLE IF EXISTS raw."{ex.target_table}"')
+            _emit(progress, f"[{i + 1}/{total}] {ex.name}: running")
             run = _run_extractor(con, source, coll, ex, profile, scope, history_days)
-        except KeyboardInterrupt:
-            _record_interruption(
-                con, coll, i, scope, history_days, prior, progress
+            db.record_extract_run(con, coll, run)
+            secs = (utcnow() - run.started_at).total_seconds()
+            line = (
+                f"[{i + 1}/{total}] {ex.name}: {run.status} "
+                f"({run.rows_written or 0} rows, {secs:.1f}s)"
             )
-            raise
-        db.record_extract_run(con, coll, run)
-        secs = (utcnow() - run.started_at).total_seconds()
-        line = (
-            f"[{i + 1}/{total}] {ex.name}: {run.status} "
-            f"({run.rows_written or 0} rows, {secs:.1f}s)"
-        )
-        if run.status not in ("complete", "not_requested") and run.error_detail:
-            line += f" — {run.error_detail[:120]}"
-        _emit(progress, line)
+            if run.status not in ("complete", "not_requested") and run.error_detail:
+                line += f" — {run.error_detail[:120]}"
+            _emit(progress, line)
 
-    db.finish_collection(con, coll)
+        db.finish_collection(con, coll)
+    except KeyboardInterrupt:
+        _ensure_interrupt_coverage(con, coll, scope, history_days, progress)
+        raise
     return coll
 
 
-def _record_interruption(
+def _ensure_interrupt_coverage(
     con: duckdb.DuckDBPyConnection,
     coll: Collection,
-    at_index: int,
     scope: Scope | None,
     history_days: int,
-    prior: dict[str, str],
     progress: "Callable[[str], None] | None",
 ) -> None:
-    """Ctrl+C landed mid-collection: every extractor still gets a coverage
-    row so the database stays a valid partial output. finished_at is left
-    NULL — the collection is visibly unfinished and resumable."""
-    for j, ex in enumerate(EXTRACTORS[at_index:]):
-        if prior.get(ex.name) in _RESUME_KEEP:
-            continue  # already covered by the earlier (resumed) run
-        if prior.get(ex.name) is not None:
-            db.delete_extract_run(con, coll, ex.name)
+    """Ctrl+C landed somewhere in the orchestration: repair the coverage
+    contract by recording an 'interrupted' row for every extractor that has
+    none. finished_at is left NULL (or was already cleared by a resume) —
+    the collection is visibly unfinished and resumable."""
+    have = {
+        r[0]
+        for r in con.execute(
+            "SELECT extractor FROM meta.extract_runs WHERE collection_id = ?",
+            [str(coll.collection_id)],
+        ).fetchall()
+    }
+    for ex in EXTRACTORS:
+        if ex.name in have:
+            continue
         run = _base_run(ex, scope, _effective_window(ex, history_days))
         run.status = "interrupted"
         run.error_category = "error"
         run.retryable = True
-        if j == 0:
-            run.error_detail = (
-                "interrupted by user mid-extract; partial rows may be present "
-                "in raw and are replaced on --resume"
-            )
-        else:
-            run.error_detail = (
-                "collection interrupted before this extractor ran; "
-                "re-run with --resume"
-            )
+        run.error_detail = (
+            "collection interrupted before this extractor completed; any "
+            "partial raw rows are replaced on --resume"
+        )
         db.record_extract_run(con, coll, run)
     _emit(progress, "interrupted — state saved; continue with --resume")
 

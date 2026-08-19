@@ -88,7 +88,8 @@ def test_interrupt_leaves_valid_partial_collection(out_db):
         "SELECT error_detail, retryable FROM meta.extract_runs "
         "WHERE extractor = 'tables'"
     ).fetchone()
-    assert "mid-extract" in detail[0] and detail[1] is True
+    assert "interrupted" in detail[0] and "--resume" in detail[0]
+    assert detail[1] is True
     # the collection is visibly unfinished
     finished = out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
     assert finished is None
@@ -150,6 +151,87 @@ def test_resume_reports_skips_in_progress(out_db):
     assert any("resuming collection" in l for l in lines)
     assert any("databases: skipped (complete in existing collection)" in l
                for l in lines)
+
+
+def test_interrupt_outside_extractor_still_records_all_rows(out_db):
+    """Review, 2026-08-19: the guard must cover the whole orchestration —
+    a Ctrl+C landing in a progress write (not inside an extractor) must
+    still leave every extractor with a coverage row."""
+    calls = {"n": 0}
+
+    def exploding_progress(msg: str) -> None:
+        calls["n"] += 1
+        if calls["n"] == 5:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_collection(
+            out_db, make_source(), profile=Profile.FULL,
+            progress=exploding_progress,
+        )
+    rows = dict(out_db.execute(
+        "SELECT extractor, status FROM meta.extract_runs"
+    ).fetchall())
+    assert set(rows) == {e.name for e in EXTRACTORS}
+    assert "interrupted" in set(rows.values())
+    finished = out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
+    assert finished is None
+
+
+def test_failed_retry_leaves_no_stale_raw_evidence(out_db):
+    """Review, 2026-08-19: a resume retry that fails before ingesting must
+    not leave the previous attempt's raw rows behind a 'failed' status —
+    the report would materialize stale evidence."""
+    run_collection(out_db, make_source(), profile=Profile.FULL)
+    assert out_db.execute("SELECT count(*) FROM raw.tables").fetchone()[0] > 0
+    # simulate a prior run whose 'tables' extract needs a retry
+    out_db.execute(
+        "UPDATE meta.extract_runs SET status = 'failed' WHERE extractor = 'tables'"
+    )
+    # the retry fails outright (generic error -> no INFORMATION_SCHEMA save)
+    source = make_source(tables=RuntimeError("boom"))
+    source.info_schema = {"tables": {"APPDB": RuntimeError("boom")}}
+    run_collection(out_db, source, profile=Profile.FULL, resume=True)
+    status = out_db.execute(
+        "SELECT status FROM meta.extract_runs WHERE extractor = 'tables'"
+    ).fetchone()[0]
+    assert status == "failed"
+    # the stale raw table is gone, not silently attributed to this collection
+    exists = out_db.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_schema = 'raw' AND table_name = 'tables'"
+    ).fetchone()[0]
+    assert exists == 0
+    # and the report materializes nothing from it
+    from md_migration_assessment.report import build_report
+
+    build_report(out_db)
+    assert out_db.execute("SELECT count(*) FROM report.sizing").fetchone()[0] == 0
+
+
+def test_resume_reopens_a_finished_collection(out_db):
+    """Review, 2026-08-19: a finished collection with failed extractors is
+    resumable; an interrupted retry must not leave finished_at set while
+    extractors say interrupted."""
+    run_collection(out_db, make_source(), profile=Profile.FULL)
+    assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
+    out_db.execute(
+        "UPDATE meta.extract_runs SET status = 'unavailable' WHERE extractor = 'tables'"
+    )
+    with pytest.raises(KeyboardInterrupt):
+        run_collection(
+            out_db, make_source(tables=KeyboardInterrupt()),
+            profile=Profile.FULL, resume=True,
+        )
+    finished = out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
+    assert finished is None
+    status = out_db.execute(
+        "SELECT status FROM meta.extract_runs WHERE extractor = 'tables'"
+    ).fetchone()[0]
+    assert status == "interrupted"
+    # and a second resume completes and re-stamps finished_at
+    run_collection(out_db, make_source(), profile=Profile.FULL, resume=True)
+    assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
 
 
 def test_resume_refuses_a_different_account(out_db):

@@ -84,16 +84,36 @@ def collect(
                 resume=resume,
             )
         except KeyboardInterrupt:
-            # The runner already recorded honest coverage rows; make the
-            # partial database immediately useful before exiting.
+            # The runner repairs coverage on the way out; make the partial
+            # database immediately useful, then VERIFY the guarantee before
+            # claiming it (a second Ctrl+C can interrupt the repair itself).
             try:
                 build_report(con)
             except Exception:  # noqa: BLE001 — best effort on the way out
                 pass
+            try:
+                from .collect.manifest import EXTRACTORS
+
+                covered = con.execute(
+                    "SELECT count(DISTINCT extractor) FROM meta.extract_runs"
+                ).fetchone()[0]
+                complete_coverage = covered == len(EXTRACTORS)
+            except Exception:  # noqa: BLE001
+                complete_coverage = False
+            if complete_coverage:
+                state = (
+                    "Every extractor's state is in meta.extract_runs "
+                    "(status 'interrupted' = not collected)."
+                )
+            else:
+                state = (
+                    "Coverage rows may be incomplete (the interrupt landed "
+                    "inside state recording); meta.extract_runs holds what "
+                    "was captured."
+                )
             typer.echo(
                 f"\ninterrupted — partial collection saved to {output}. "
-                "Every extractor's state is in meta.extract_runs "
-                "(status 'interrupted' = not collected). Continue with:\n"
+                f"{state} Continue with:\n"
                 f"  md-assess collect --output {output} --resume",
                 err=True,
             )

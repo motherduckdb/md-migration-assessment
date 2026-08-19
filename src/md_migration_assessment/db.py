@@ -190,6 +190,17 @@ def finish_collection(con: duckdb.DuckDBPyConnection, coll: Collection) -> None:
     )
 
 
+def reopen_collection(con: duckdb.DuckDBPyConnection, coll: Collection) -> None:
+    """Clear finished_at when a resume starts re-running extractors: while
+    work is in flight the collection must read as unfinished, so an
+    interrupted retry cannot leave a 'finished' collection whose extractors
+    say interrupted. finish_collection re-stamps it on success."""
+    con.execute(
+        "UPDATE meta.collections SET finished_at = NULL WHERE collection_id = ?",
+        [str(coll.collection_id)],
+    )
+
+
 def load_collection(con: duckdb.DuckDBPyConnection) -> tuple[Collection, int]:
     """Load the database's single collection for --resume.
 
