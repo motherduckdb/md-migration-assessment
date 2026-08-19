@@ -36,4 +36,7 @@ __version__ = "0.1.0.dev0"
 RAW_SCHEMA_VERSION = 10
 
 # Version of the meta.* table shapes.
-META_SCHEMA_VERSION = 1
+# v2: 'interrupted' extract-run status (Ctrl+C leaves honest coverage rows;
+#   --resume re-runs them); meta.gaps includes it; unused meta.checkpoints
+#   dropped (decision 16 cut intra-extract chunk checkpointing).
+META_SCHEMA_VERSION = 2

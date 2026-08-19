@@ -50,7 +50,13 @@ def require_local_path(path: str, context: str) -> None:
 
 
 #: Extractor run statuses (spec §2). Values are stored as VARCHAR.
-STATUSES = ("complete", "partial", "unavailable", "failed", "not_requested")
+#: 'interrupted' = the user stopped the collection (Ctrl+C) before or during
+#: this extractor; always retryable via --resume, and like every incomplete
+#: status it reads as missing evidence, never as an observed zero.
+STATUSES = (
+    "complete", "partial", "unavailable", "failed", "not_requested",
+    "interrupted",
+)
 
 _META_DDL = """
 CREATE SCHEMA IF NOT EXISTS raw;
@@ -64,7 +70,8 @@ CREATE TABLE IF NOT EXISTS meta.collections (
     profile              VARCHAR NOT NULL,
     scope                JSON,               -- list of "DB" / "DB.SCHEMA", null = account-wide
     mode                 VARCHAR NOT NULL,   -- 'local' | 'managed'
-    query_text_mode      VARCHAR NOT NULL,   -- 'none' | 'hashed' | 'redacted' | 'raw'
+    query_text_mode      VARCHAR NOT NULL,   -- always 'never_collected' (decision 16:
+                                             -- workload query text is never fetched)
     history_days         INTEGER NOT NULL,
     snowflake_account    VARCHAR,
     snowflake_version    VARCHAR,
@@ -96,18 +103,11 @@ CREATE TABLE IF NOT EXISTS meta.extract_runs (
     finished_at          TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS meta.checkpoints (
-    collection_id  UUID NOT NULL,
-    extractor      VARCHAR NOT NULL,
-    chunk_key      VARCHAR NOT NULL,
-    completed_at   TIMESTAMPTZ NOT NULL
-);
-
 CREATE OR REPLACE VIEW meta.gaps AS
 SELECT collection_id, extractor, status, source_used,
        error_category, error_detail, retryable
 FROM meta.extract_runs
-WHERE status IN ('partial', 'unavailable', 'failed');
+WHERE status IN ('partial', 'unavailable', 'failed', 'interrupted');
 """
 
 
@@ -144,7 +144,7 @@ class Collection:
     profile: str
     mode: str = "local"
     scope: list[str] | None = None
-    query_text_mode: str = "hashed"
+    query_text_mode: str = "never_collected"
     history_days: int = 30
     snowflake_account: str | None = None
     snowflake_version: str | None = None
@@ -187,6 +187,57 @@ def finish_collection(con: duckdb.DuckDBPyConnection, coll: Collection) -> None:
     con.execute(
         "UPDATE meta.collections SET finished_at = ? WHERE collection_id = ?",
         [utcnow(), str(coll.collection_id)],
+    )
+
+
+def load_collection(con: duckdb.DuckDBPyConnection) -> tuple[Collection, int]:
+    """Load the database's single collection for --resume.
+
+    Returns (collection, stored raw_schema_version). The stored parameters
+    are authoritative on resume — profile, scope, and history window come
+    from here, never from fresh CLI flags.
+    """
+    rows = con.execute(
+        """
+        SELECT collection_id, profile, mode, scope, query_text_mode,
+               history_days, snowflake_account, snowflake_version,
+               snowflake_region, snowflake_edition, started_at,
+               raw_schema_version
+        FROM meta.collections
+        """
+    ).fetchall()
+    if not rows:
+        raise ValueError("nothing to resume: this database contains no collection")
+    if len(rows) > 1:
+        raise ValueError(
+            "cannot resume: multiple collections in one file (unsupported)"
+        )
+    (cid, profile, mode, scope, qtm, days, acct, ver, region, edition,
+     started, raw_version) = rows[0]
+    coll = Collection(
+        profile=profile,
+        mode=mode,
+        scope=json.loads(scope) if scope is not None else None,
+        query_text_mode=qtm,
+        history_days=days,
+        snowflake_account=acct,
+        snowflake_version=ver,
+        snowflake_region=region,
+        snowflake_edition=edition,
+        collection_id=uuid.UUID(str(cid)),
+        started_at=started,
+    )
+    return coll, raw_version
+
+
+def delete_extract_run(
+    con: duckdb.DuckDBPyConnection, coll: Collection, extractor: str
+) -> None:
+    """Remove an extractor's coverage row before a resume re-runs it, so the
+    collection keeps exactly one authoritative row per extractor."""
+    con.execute(
+        "DELETE FROM meta.extract_runs WHERE collection_id = ? AND extractor = ?",
+        [str(coll.collection_id), extractor],
     )
 
 

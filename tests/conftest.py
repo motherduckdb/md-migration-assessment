@@ -44,11 +44,13 @@ class FakeSource:
         info_schema: dict | None = None,
         databases: list[str] | None = None,
         show_data: dict | None = None,
+        account: str = "TESTACCT",
     ) -> None:
         self.account_usage = account_usage or {}
         self.info_schema = info_schema or {}
         self.show_data = show_data or {}
         self.databases = databases if databases is not None else ["DB1", "DB2"]
+        self.account = account
         self.queries: list[str] = []
 
     def reader(self, sql: str):
@@ -57,14 +59,16 @@ class FakeSource:
         if m:
             name = m.group(1).lower()
             result = self.account_usage.get(name, small_table())
-            if isinstance(result, Exception):
+            # BaseException, not Exception: interruption tests inject
+            # KeyboardInterrupt, which must propagate like the real thing
+            if isinstance(result, BaseException):
                 raise result
             return result
         m = _AU_RE.search(sql)
         if m:
             name = m.group(1).lower()
             result = self.account_usage.get(name, small_table())
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 raise result
             return result
         m = _IS_RE.search(sql)
@@ -102,7 +106,7 @@ class FakeSource:
         return list(self.databases)
 
     def session_info(self) -> SessionInfo:
-        return SessionInfo(account="TESTACCT", version="9.9.9", region="AWS_US_WEST_2")
+        return SessionInfo(account=self.account, version="9.9.9", region="AWS_US_WEST_2")
 
     def server_time(self):
         # recorded in .queries so tests can assert the anchor is captured

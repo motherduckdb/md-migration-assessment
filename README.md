@@ -46,6 +46,22 @@ compute cost scales with your own history volume). `--history-days`
 A partial collection is always a valid output: every extractor records its coverage
 in `meta.extract_runs`, and missing evidence is never presented as an observed zero.
 
+**Interrupting and resuming.** `collect` prints per-extractor progress to stderr
+and is safe to stop with Ctrl+C at any point: the in-flight extractor and every
+unattempted one are recorded with status `interrupted` (visible in `meta.gaps`),
+the report layer is built over whatever landed, and the database is a valid
+partial collection. Continue it with:
+
+```bash
+md-assess collect --output assessment.duckdb --resume
+```
+
+Resume skips extractors already `complete`, re-runs everything else (including
+previously `failed`/`unavailable` ones — useful after fixing grants), and takes
+profile/scope/window from the existing collection rather than from flags. It
+refuses to mix accounts: resuming against a different Snowflake account than
+the one recorded in `meta.collections` is an error.
+
 ## Privileges
 
 The simple path is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.

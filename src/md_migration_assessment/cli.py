@@ -37,35 +37,67 @@ def collect(
     scope: list[str] = typer.Option(
         None, "--scope", help="Limit collection to DB or DB.SCHEMA (repeatable)."
     ),
-    query_text: str = typer.Option(
-        "hashed", "--query-text", help="none | hashed | redacted | raw"
-    ),
     history_days: int = typer.Option(30, min=1, max=365),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Continue an incomplete collection in OUTPUT: extractors already "
+        "complete are skipped; profile/scope/history come from the existing "
+        "collection, not from these flags.",
+    ),
 ) -> None:
-    """Collect a Snowflake inventory into a local DuckDB database."""
+    """Collect a Snowflake inventory into a local DuckDB database.
+
+    Safe to interrupt: on Ctrl+C every extractor's state is recorded in
+    meta.extract_runs and the database remains a valid partial collection;
+    re-run with --resume to continue where it stopped.
+    """
     from .collect.runner import Scope, run_collection
     from .collect.snowflake import SnowflakeConfig, SnowflakeSource
+    from .report import build_report
 
     prof = Profile.parse(profile)
     parsed_scope = Scope.parse(scope)
-    if query_text != "hashed":
-        # M3 implements the other modes; refuse rather than silently ignore.
-        raise typer.BadParameter("only --query-text hashed is implemented so far")
+    if resume and (scope or profile != "standard" or history_days != 30):
+        typer.echo(
+            "note: --resume continues the existing collection; profile, "
+            "--scope, and --history-days flags are ignored in favor of the "
+            "stored collection parameters",
+            err=True,
+        )
 
-    from .report import build_report
+    def progress(msg: str) -> None:
+        typer.echo(msg, err=True)
 
     cfg = SnowflakeConfig.from_env()
     con = open_output(output)
     source = SnowflakeSource.open(cfg)
     try:
-        coll = run_collection(
-            con,
-            source,
-            profile=prof,
-            scope=parsed_scope,
-            history_days=history_days,
-            query_text_mode=query_text,
-        )
+        try:
+            coll = run_collection(
+                con,
+                source,
+                profile=prof,
+                scope=parsed_scope,
+                history_days=history_days,
+                progress=progress,
+                resume=resume,
+            )
+        except KeyboardInterrupt:
+            # The runner already recorded honest coverage rows; make the
+            # partial database immediately useful before exiting.
+            try:
+                build_report(con)
+            except Exception:  # noqa: BLE001 — best effort on the way out
+                pass
+            typer.echo(
+                f"\ninterrupted — partial collection saved to {output}. "
+                "Every extractor's state is in meta.extract_runs "
+                "(status 'interrupted' = not collected). Continue with:\n"
+                f"  md-assess collect --output {output} --resume",
+                err=True,
+            )
+            raise typer.Exit(130) from None
         build_report(con)
     finally:
         source.close()

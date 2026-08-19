@@ -14,6 +14,10 @@ Status semantics:
 - ``unavailable``: the source view/privilege/edition is not accessible
   (classified from the Snowflake error), and no fallback succeeded.
 - ``failed``: unexpected error; ``retryable`` is true.
+- ``interrupted``: the user stopped the collection (Ctrl+C) during or
+  before this extractor. Every extractor still gets a row — an interrupted
+  collection is a valid partial output, and ``resume=True`` re-runs exactly
+  the extractors that are not ``complete``/``not_requested``.
 """
 
 from __future__ import annotations
@@ -21,12 +25,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Iterable, Protocol
+from typing import Callable, Iterable, Protocol
 
 import duckdb
 import pyarrow as pa
 
-from .. import db
+from .. import RAW_SCHEMA_VERSION, db
 from ..db import Collection, ExtractRun, utcnow
 from .manifest import EXTRACTORS, Extractor, Profile, extractor_version, load_sql
 from .snowflake import SessionInfo
@@ -174,6 +178,16 @@ class _Ingestor:
         return self.rows
 
 
+#: Statuses --resume keeps as-is; everything else is re-run (a re-run's
+#: CREATE OR REPLACE ingest cleanly replaces any partial rows).
+_RESUME_KEEP = frozenset({"complete", "not_requested"})
+
+
+def _emit(progress: "Callable[[str], None] | None", msg: str) -> None:
+    if progress is not None:
+        progress(msg)
+
+
 def run_collection(
     con: duckdb.DuckDBPyConnection,
     source: Source,
@@ -181,39 +195,153 @@ def run_collection(
     profile: Profile,
     scope: Scope | None = None,
     history_days: int = 30,
-    query_text_mode: str = "hashed",
+    query_text_mode: str = "never_collected",
     mode: str = "local",
+    progress: "Callable[[str], None] | None" = None,
+    resume: bool = False,
 ) -> Collection:
-    # Raw evidence is immutable: ingest uses CREATE OR REPLACE per extract, so
-    # a second collection in the same file would silently destroy the first
-    # collection's raw.* rows while meta.collections still listed both.
-    existing = con.execute("SELECT count(*) FROM meta.collections").fetchone()[0]
-    if existing:
-        raise ValueError(
-            "output database already contains a collection; write each "
-            "collection to a new file"
-        )
+    """Run (or resume) a collection.
 
+    On ``resume=True`` the stored collection is authoritative: profile,
+    scope, --history-days, and privacy settings come from meta.collections
+    and the passed values are ignored — a resume continues the original
+    collection, it never silently redefines it. Extractors already
+    ``complete`` or ``not_requested`` are skipped; everything else
+    (``failed``, ``partial``, ``unavailable``, ``interrupted``, missing) is
+    re-run and its coverage row replaced.
+
+    A KeyboardInterrupt (Ctrl+C) is caught only long enough to keep the
+    coverage contract: the in-flight extractor and every unattempted one get
+    an ``interrupted`` row, ``finished_at`` stays NULL, and the interrupt is
+    re-raised. The database is a valid partial collection at every point.
+    """
     info = source.session_info()
-    coll = Collection(
-        profile=profile.name.lower(),
-        mode=mode,
-        scope=scope.as_list() if scope else None,
-        query_text_mode=query_text_mode,
-        history_days=history_days,
-        snowflake_account=info.account,
-        snowflake_version=info.version,
-        snowflake_region=info.region,
-        snowflake_edition=info.edition,
-    )
-    db.begin_collection(con, coll)
 
-    for ex in EXTRACTORS:
-        run = _run_extractor(con, source, coll, ex, profile, scope, history_days)
+    if resume:
+        coll, stored_raw_version = db.load_collection(con)
+        if stored_raw_version != RAW_SCHEMA_VERSION:
+            raise ValueError(
+                f"cannot resume: collection has raw schema "
+                f"v{stored_raw_version}, this tool writes "
+                f"v{RAW_SCHEMA_VERSION}. Re-collect into a new file."
+            )
+        # Mixing accounts inside one collection would silently blend two
+        # deployments' evidence under one collection_id.
+        if coll.snowflake_account and info.account and (
+            coll.snowflake_account != info.account
+        ):
+            raise ValueError(
+                f"cannot resume: this database was collected from account "
+                f"{coll.snowflake_account!r} but the connection is to "
+                f"{info.account!r}"
+            )
+        profile = Profile.parse(coll.profile)
+        scope = Scope.parse(coll.scope)
+        history_days = coll.history_days
+        prior = {
+            r[0]: r[1]
+            for r in con.execute(
+                "SELECT extractor, status FROM meta.extract_runs "
+                "WHERE collection_id = ?",
+                [str(coll.collection_id)],
+            ).fetchall()
+        }
+        _emit(progress, (
+            f"resuming collection {coll.collection_id} "
+            f"(profile={coll.profile}, history_days={history_days}, "
+            f"{sum(1 for s in prior.values() if s in _RESUME_KEEP)} of "
+            f"{len(EXTRACTORS)} extractors already done)"
+        ))
+    else:
+        # Raw evidence is immutable: ingest uses CREATE OR REPLACE per
+        # extract, so a second collection in the same file would silently
+        # destroy the first collection's raw.* rows while meta.collections
+        # still listed both.
+        existing = con.execute("SELECT count(*) FROM meta.collections").fetchone()[0]
+        if existing:
+            raise ValueError(
+                "output database already contains a collection; write each "
+                "collection to a new file, or pass --resume to continue an "
+                "incomplete one"
+            )
+        coll = Collection(
+            profile=profile.name.lower(),
+            mode=mode,
+            scope=scope.as_list() if scope else None,
+            query_text_mode=query_text_mode,
+            history_days=history_days,
+            snowflake_account=info.account,
+            snowflake_version=info.version,
+            snowflake_region=info.region,
+            snowflake_edition=info.edition,
+        )
+        db.begin_collection(con, coll)
+        prior = {}
+
+    total = len(EXTRACTORS)
+    for i, ex in enumerate(EXTRACTORS):
+        prior_status = prior.get(ex.name)
+        if prior_status in _RESUME_KEEP:
+            _emit(progress, f"[{i + 1}/{total}] {ex.name}: skipped "
+                            f"({prior_status} in existing collection)")
+            continue
+        if prior_status is not None:
+            db.delete_extract_run(con, coll, ex.name)
+        _emit(progress, f"[{i + 1}/{total}] {ex.name}: running")
+        try:
+            run = _run_extractor(con, source, coll, ex, profile, scope, history_days)
+        except KeyboardInterrupt:
+            _record_interruption(
+                con, coll, i, scope, history_days, prior, progress
+            )
+            raise
         db.record_extract_run(con, coll, run)
+        secs = (utcnow() - run.started_at).total_seconds()
+        line = (
+            f"[{i + 1}/{total}] {ex.name}: {run.status} "
+            f"({run.rows_written or 0} rows, {secs:.1f}s)"
+        )
+        if run.status not in ("complete", "not_requested") and run.error_detail:
+            line += f" — {run.error_detail[:120]}"
+        _emit(progress, line)
 
     db.finish_collection(con, coll)
     return coll
+
+
+def _record_interruption(
+    con: duckdb.DuckDBPyConnection,
+    coll: Collection,
+    at_index: int,
+    scope: Scope | None,
+    history_days: int,
+    prior: dict[str, str],
+    progress: "Callable[[str], None] | None",
+) -> None:
+    """Ctrl+C landed mid-collection: every extractor still gets a coverage
+    row so the database stays a valid partial output. finished_at is left
+    NULL — the collection is visibly unfinished and resumable."""
+    for j, ex in enumerate(EXTRACTORS[at_index:]):
+        if prior.get(ex.name) in _RESUME_KEEP:
+            continue  # already covered by the earlier (resumed) run
+        if prior.get(ex.name) is not None:
+            db.delete_extract_run(con, coll, ex.name)
+        run = _base_run(ex, scope, _effective_window(ex, history_days))
+        run.status = "interrupted"
+        run.error_category = "error"
+        run.retryable = True
+        if j == 0:
+            run.error_detail = (
+                "interrupted by user mid-extract; partial rows may be present "
+                "in raw and are replaced on --resume"
+            )
+        else:
+            run.error_detail = (
+                "collection interrupted before this extractor ran; "
+                "re-run with --resume"
+            )
+        db.record_extract_run(con, coll, run)
+    _emit(progress, "interrupted — state saved; continue with --resume")
 
 
 def _effective_window(ex: Extractor, history_days: int) -> int | None:

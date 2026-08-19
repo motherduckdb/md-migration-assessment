@@ -28,7 +28,10 @@ def test_meta_schema_exists(out_db):
             "SELECT table_name FROM information_schema.tables WHERE table_schema='meta'"
         ).fetchall()
     }
-    assert {"collections", "extract_runs", "checkpoints"} <= tables
+    assert {"collections", "extract_runs"} <= tables
+    # meta.checkpoints was planned for per-chunk resumability and dropped
+    # with decision 16 (resume is per-extractor and needs no extra table)
+    assert "checkpoints" not in tables
 
 
 @pytest.mark.parametrize("bad", ["md:x", "MD:x", "motherduck:x", "s3://bucket/x.duckdb"])
