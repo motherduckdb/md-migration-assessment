@@ -106,6 +106,48 @@ def test_concurrency_uses_exact_events_and_hour_boundaries():
             "busy_seconds"} <= cols
 
 
+def test_concurrency_observation_stops_at_the_latency_watermark():
+    """Review round 2, 2026-08-19: QUERY_HISTORY lags up to 45 minutes.
+    The spine must stop at that watermark — the latency gap emits no rows
+    (missing evidence is never idle time) — and the carriers must bracket
+    the exact window start and watermark so partial first/last hours
+    average over observed time only, never pre-window or unobserved time."""
+    ex = next(e for e in M3C if e.name == "query_concurrency")
+    sql = _sql("query_concurrency")
+    # the manifest lag and the SQL watermark are the same constant
+    assert ex.window_end_lag_minutes == 45
+    assert "DATEADD(minute, -45, CURRENT_TIMESTAMP)" in sql
+    # every event source is clipped/clamped to the watermark
+    assert sql.count("start_time < DATEADD(minute, -45, CURRENT_TIMESTAMP)") == 3
+    assert "LEAST(COALESCE(end_time, CURRENT_TIMESTAMP)" in sql
+    # exact-endpoint carriers via clamping (duplicates net out)
+    assert "GREATEST(DATEADD(day, -{window_days}, CURRENT_TIMESTAMP)" in sql
+    # no other extract silently claims a lag it does not implement
+    for other in M3C:
+        if other.name != "query_concurrency":
+            assert other.window_end_lag_minutes == 0, other.name
+
+
+def test_watermark_is_disclosed_in_actual_window_end(out_db):
+    from datetime import timedelta
+
+    coll, _ = collect(out_db)
+    rows = {
+        r[0]: (r[1], r[2])
+        for r in out_db.execute(
+            "SELECT extractor, actual_window_start, actual_window_end "
+            "FROM meta.extract_runs WHERE collection_id = ? "
+            "AND extractor IN ('query_concurrency', 'query_workload_rollup')",
+            [str(coll.collection_id)],
+        ).fetchall()
+    }
+    conc_start, conc_end = rows["query_concurrency"]
+    roll_start, roll_end = rows["query_workload_rollup"]
+    # same requested window, but concurrency's observed end lags 45 minutes
+    assert abs((roll_end - conc_end) - timedelta(minutes=45)) < timedelta(seconds=5)
+    assert abs(roll_start - conc_start) < timedelta(seconds=5)
+
+
 def test_dialect_scan_keeps_text_inside_aggregates():
     """query_text may appear only inside count_if(...) predicates — the
     projection itself was checked above; this pins the mechanism."""

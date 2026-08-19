@@ -361,8 +361,11 @@ def _run_extractor(
             run.status = "complete"
             run.source_used = "account_usage"
             if window_days is not None:
-                run.actual_window_end = utcnow()
-                run.actual_window_start = run.actual_window_end - timedelta(days=window_days)
+                now = utcnow()
+                # extracts with a latency watermark observe up to now - lag;
+                # the gap is disclosed here, never presented as observed
+                run.actual_window_end = now - timedelta(minutes=ex.window_end_lag_minutes)
+                run.actual_window_start = now - timedelta(days=window_days)
             return run
         except Exception as exc:  # noqa: BLE001 — every failure becomes coverage metadata
             au_error = exc

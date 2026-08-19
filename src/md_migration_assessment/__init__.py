@@ -26,10 +26,13 @@ __version__ = "0.1.0.dev0"
 #   (spec decision 16): query_concurrency, query_tag_fingerprints,
 #   client_app_fingerprints, query_shapes, query_workload_rollup,
 #   query_dialect_constructs.
-# v10 (M3c review): query_concurrency rebuilt on exact event timestamps
-#   with hour-boundary carriers — columns become peak_concurrent_queries /
-#   avg_concurrent_queries / busy_seconds (active_event_minutes dropped);
-#   query_shapes exempts the '(unhashed)' bucket from the top-N cap.
+# v10 (M3c review rounds 1-2): query_concurrency rebuilt on exact event
+#   timestamps with carriers bracketing the exact observation window
+#   [window start, now - 45min QUERY_HISTORY latency watermark] — columns
+#   become peak_concurrent_queries / avg_concurrent_queries / busy_seconds
+#   (active_event_minutes dropped); the latency gap emits no rows and is
+#   disclosed via actual_window_end; query_shapes exempts the '(unhashed)'
+#   bucket from the top-N cap.
 RAW_SCHEMA_VERSION = 10
 
 # Version of the meta.* table shapes.

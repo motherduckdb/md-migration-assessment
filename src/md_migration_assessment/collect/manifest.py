@@ -66,6 +66,11 @@ class Extractor:
     #: extract name (M3c server-side aggregates: several extracts read
     #: QUERY_HISTORY). None means the extract name is the view name.
     account_usage_view: str | None = None
+    #: minutes the extract's observation deliberately stops short of "now"
+    #: (an ACCOUNT_USAGE latency watermark baked into the extract SQL);
+    #: reported through meta.extract_runs.actual_window_end so the latency
+    #: gap is disclosed coverage, never fabricated idle time.
+    window_end_lag_minutes: int = 0
     #: SHOW-command source (e.g. "SHOW STREAMS IN ACCOUNT"). SHOW output is
     #: account-wide and cannot be scope-filtered; columns are server-defined.
     show_sql: str | None = None
@@ -777,6 +782,10 @@ EXTRACTORS: list[Extractor] = [
         window_days=30,
         window_from_history_days=True,
         account_usage_view="query_history",
+        # the extract's observation spine stops at a 45-minute QUERY_HISTORY
+        # latency watermark (documented max lag) so the not-yet-visible tail
+        # is absent coverage, never rows that read as idle
+        window_end_lag_minutes=45,
         sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
     ),
     Extractor(
