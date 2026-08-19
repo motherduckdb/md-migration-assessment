@@ -275,9 +275,14 @@ WORKLOAD = {
     ]),
     "pipe_usage_history": _t([
         dict(pipe_id=101, pipe_database="APPDB", pipe_schema="S1",
-             pipe_name="APPDB.S1.LOAD_EVENTS", usage_date=date(2026, 8, 10),
-             credits_used=0.3, bytes_inserted=48000, files_inserted=24,
-             n_intervals=10),
+             pipe_name="APPDB.S1.LOAD_EVENTS", source_kind="snowpipe",
+             usage_date=date(2026, 8, 10), credits_used=0.3,
+             bytes_inserted=48000, files_inserted=24, n_intervals=10),
+        # named Iceberg automated-refresh activity: present, never 'snowpipe'
+        dict(pipe_id=202, pipe_database="APPDB", pipe_schema="S1",
+             pipe_name="APPDB.S1.ICEBERG_T", source_kind="unclassified_refresh",
+             usage_date=date(2026, 8, 10), credits_used=0.1,
+             bytes_inserted=1000, files_inserted=2, n_intervals=4),
     ]),
     "task_history": _t([
         dict(task_database="APPDB", task_schema="S1",

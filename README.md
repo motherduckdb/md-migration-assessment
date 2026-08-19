@@ -108,7 +108,7 @@ any role and report the objects that role can see.
 | warehouse_load_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
 | metering_daily_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
 | copy_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
-| pipe_usage_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| pipe_usage_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER + SNOWFLAKE.OBJECT_VIEWER | Standard |
 | task_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
 | login_history | full | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
 

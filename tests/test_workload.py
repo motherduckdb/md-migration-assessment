@@ -132,6 +132,18 @@ def test_pipe_usage_excludes_hidden_auto_refresh_pipes():
     assert "pipe_id" in sql
 
 
+def test_pipe_usage_classifies_named_rows_against_actual_pipes():
+    """A non-NULL PIPE_NAME can be an Iceberg table with automated refresh,
+    not a pipe. Rows must be classified against ACCOUNT_USAGE.PIPES and
+    unmatched rows kept under an explicit category — never presumed
+    Snowpipe (review round 2, 2026-08-19)."""
+    sql = _executable_sql("pipe_usage_history.sql")
+    assert "left join snowflake.account_usage.pipes" in sql
+    assert "as source_kind" in sql
+    assert "'snowpipe'" in sql
+    assert "'unclassified_refresh'" in sql
+
+
 def test_pipe_usage_scope_filters_server_side(out_db):
     """PIPE_USAGE_HISTORY has no residency columns; --scope must still hold —
     a scoped run may never persist out-of-scope pipe names (P1, 2026-08-19)."""
@@ -144,10 +156,10 @@ def test_pipe_usage_scope_filters_server_side(out_db):
     )
     rendered = [q for q in source.queries if "pipe_usage_history" in q]
     assert rendered
-    assert "split_part(pipe_name, '.', 1) IN ('APPDB')" in rendered[0]
+    assert "split_part(u.pipe_name, '.', 1) IN ('APPDB')" in rendered[0]
     assert (
-        "(split_part(pipe_name, '.', 1) = 'OTHERDB' "
-        "AND split_part(pipe_name, '.', 2) = 'S2')" in rendered[0]
+        "(split_part(u.pipe_name, '.', 1) = 'OTHERDB' "
+        "AND split_part(u.pipe_name, '.', 2) = 'S2')" in rendered[0]
     )
 
 

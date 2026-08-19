@@ -711,10 +711,15 @@ EXTRACTORS: list[Extractor] = [
         # derived from the fully qualified PIPE_NAME so scoped runs never
         # persist out-of-scope pipe names (review finding, 2026-08-19).
         scope_columns={
-            "database": "split_part(pipe_name, '.', 1)",
-            "schema": "split_part(pipe_name, '.', 2)",
+            "database": "split_part(u.pipe_name, '.', 1)",
+            "schema": "split_part(u.pipe_name, '.', 2)",
         },
-        required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
+        # + OBJECT_VIEWER: rows are classified against ACCOUNT_USAGE.PIPES —
+        # a named row can be Iceberg automated refresh, not a pipe
+        required_privilege=(
+            "SNOWFLAKE.USAGE_VIEWER + SNOWFLAKE.OBJECT_VIEWER "
+            "or IMPORTED PRIVILEGES"
+        ),
         window_days=30,
         window_from_history_days=True,
         sensitive_fields={

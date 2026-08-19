@@ -17,7 +17,11 @@ __version__ = "0.1.0.dev0"
 # v7 (M3b review): copy_history += load_status outcome rows (failed COPY
 #   attempts are evidence, not writes); pipe_usage_history += pipe_id and
 #   name-derived residency columns, hidden auto-refresh rows excluded.
-RAW_SCHEMA_VERSION = 7
+# v8 (M3b review round 2): pipe_usage_history += source_kind — named rows
+#   classified against ACCOUNT_USAGE.PIPES; unmatched rows are
+#   'unclassified_refresh' (Iceberg automated refresh), never presumed
+#   Snowpipe.
+RAW_SCHEMA_VERSION = 8
 
 # Version of the meta.* table shapes.
 META_SCHEMA_VERSION = 1
