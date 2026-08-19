@@ -7,8 +7,8 @@ the deployment (catalog, features, workload, spend) into a local DuckDB database
 builds factual summaries: object inventory, sizing, workload profile, feature usage
 counts, and collection coverage, with provenance.
 
-**Status: pre-release (M3b). Feature inventory is complete; workload facts
-come from aggregate histories. Not yet released for customer use.**
+**Status: pre-release (M3 complete). Feature inventory and workload facts are
+in; delivery (upload, Dive, Flight) is next. Not yet released for customer use.**
 
 ## Trust model
 
@@ -31,18 +31,20 @@ md-assess collect --profile standard --output assessment.duckdb
 md-assess report  --db assessment.duckdb
 ```
 
-Profiles: `lite` (INFORMATION_SCHEMA only, any role), `standard` (requires
-ACCOUNT_USAGE access), `full` (adds the workload story: warehouse metering and
-load, daily metering by service, copy/pipe/task history, a login-derived
-client/driver inventory, and server-side aggregates over QUERY_HISTORY —
-concurrency peaks, tool fingerprints, anonymous query shapes, type/spill/bytes
-rollups, and dialect-construct counts). Per-query rows and workload query text
-are **never** collected by any profile: the QUERY_HISTORY extracts run their
-GROUP BY inside Snowflake, so only counts, opaque hashes, and derived labels
-land — output size scales with catalog, warehouses, and wall-clock time, not
-query volume. The aggregate scans run on your warehouse (an X-Small suffices;
-compute cost scales with your own history volume). `--history-days`
-(default 30, max 365) sets the workload extracts' lookback window.
+Two profiles: `lite` (INFORMATION_SCHEMA and SHOW only — any role, no
+ACCOUNT_USAGE access needed) and `standard` (the complete assessment:
+catalog, sizing, the full features taxonomy, and the workload story —
+warehouse metering and load, daily metering by service, copy/pipe/task
+history, a login-derived client/driver inventory, and server-side aggregates
+over QUERY_HISTORY: concurrency peaks, tool fingerprints, anonymous query
+shapes, type/spill/bytes rollups, and dialect-construct counts). Per-query
+rows and workload query text are **never** collected by any profile: the
+QUERY_HISTORY extracts run their GROUP BY inside Snowflake, so only counts,
+opaque hashes, and derived labels land — output size scales with catalog,
+warehouses, and wall-clock time, not query volume. The aggregate scans run on
+your warehouse (an X-Small suffices; compute cost scales with your own
+history volume). `--history-days` (default 30, max 365) sets the workload
+extracts' lookback window.
 A partial collection is always a valid output: every extractor records its coverage
 in `meta.extract_runs`, and missing evidence is never presented as an observed zero.
 
@@ -119,19 +121,19 @@ any role and report the objects that role can see.
 | catalog_integrations | standard | SHOW | any role (integrations visible to the role) | Standard |
 | show_shares | standard | SHOW | any role (shares visible to the role) | Standard |
 | roles | standard | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
-| warehouse_metering_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
-| warehouse_load_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
-| metering_daily_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
-| copy_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
-| pipe_usage_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER + SNOWFLAKE.OBJECT_VIEWER | Standard |
-| task_history | full | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
-| login_history | full | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
-| query_concurrency | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
-| query_tag_fingerprints | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
-| client_app_fingerprints | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER + SNOWFLAKE.SECURITY_VIEWER | Standard |
-| query_shapes | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
-| query_workload_rollup | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
-| query_dialect_constructs | full | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| warehouse_metering_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| warehouse_load_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| metering_daily_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| copy_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| pipe_usage_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER + SNOWFLAKE.OBJECT_VIEWER | Standard |
+| task_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| login_history | standard | ACCOUNT_USAGE | SNOWFLAKE.SECURITY_VIEWER | Standard |
+| query_concurrency | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| query_tag_fingerprints | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| client_app_fingerprints | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER + SNOWFLAKE.SECURITY_VIEWER | Standard |
+| query_shapes | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| query_workload_rollup | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| query_dialect_constructs | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
 
 The `lite` profile needs no ACCOUNT_USAGE access at all: any role sees its own
 objects through per-database INFORMATION_SCHEMA walks.

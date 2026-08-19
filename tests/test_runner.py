@@ -37,13 +37,8 @@ def test_standard_happy_path(out_db):
     coll = run_collection(out_db, source, profile=Profile.STANDARD)
 
     st = statuses(out_db, coll)
-    # standard completes everything it requests; the M3b workload extracts
-    # are full-profile and must be visibly not_requested, never missing
-    workload = {e.name for e in EXTRACTORS if e.category == "workload"}
-    assert {n: s for n, s in st.items() if n not in workload} == {
-        n: "complete" for n in st if n not in workload
-    }
-    assert {s for n, s in st.items() if n in workload} == {"not_requested"}
+    # standard requests every extractor (decision 17 folded 'full' in)
+    assert set(st.values()) == {"complete"}
     assert len(st) == len(EXTRACTORS)
 
     # every raw table exists and is stamped with the collection id

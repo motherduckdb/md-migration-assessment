@@ -39,7 +39,7 @@ def test_m3c_extracts_declare_their_source_view():
     assert {e.name for e in M3C} == M3C_NAMES
     for ex in M3C:
         assert ex.account_usage_view == "query_history", ex.name
-        assert ex.min_profile is Profile.FULL, ex.name
+        assert ex.min_profile is Profile.STANDARD, ex.name
         assert ex.window_from_history_days, ex.name
 
 

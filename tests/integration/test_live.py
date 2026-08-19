@@ -114,12 +114,11 @@ def test_standard_profile(tmp_path, source):
     assert not failed, f"failed extractors: {failed}"
 
     for ex in EXTRACTORS:
-        allowed = ("complete", "partial", "unavailable")
-        if ex.min_profile > Profile.STANDARD:
-            # M3b workload extracts are full-profile only and must be
-            # visibly not_requested here, never silently absent
-            allowed = ("not_requested",)
-        assert runs[ex.name]["status"] in allowed, (ex.name, runs[ex.name])
+        # decision 17: standard requests every extractor
+        assert runs[ex.name]["status"] in ("complete", "partial", "unavailable"), (
+            ex.name,
+            runs[ex.name],
+        )
 
     # feature inventory: every signal gets a row and no probe may crash on
     # real data (a probe failure = column-shape drift between probe and raw)
@@ -175,7 +174,7 @@ def test_standard_profile(tmp_path, source):
     con.close()
 
 
-def test_full_profile_workload(tmp_path, source):
+def test_workload_extracts_live(tmp_path, source):
     """M3b: workload extracts must run clean against real ACCOUNT_USAGE.
 
     Row counts are activity-dependent (metering lags a few hours), so this
@@ -184,8 +183,8 @@ def test_full_profile_workload(tmp_path, source):
     """
     from md_migration_assessment.report import build_report
 
-    con = open_output(str(tmp_path / "full.duckdb"))
-    coll = run_collection(con, source, profile=Profile.FULL, history_days=30)
+    con = open_output(str(tmp_path / "workload.duckdb"))
+    coll = run_collection(con, source, profile=Profile.STANDARD, history_days=30)
     runs = _runs(con, coll)
     _print_report(runs)
 

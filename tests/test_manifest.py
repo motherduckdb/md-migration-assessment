@@ -64,9 +64,14 @@ def test_extractor_version_is_stable_content_hash():
 def test_profiles_nest():
     lite = {e.name for e in extractors_for(Profile.LITE)}
     standard = {e.name for e in extractors_for(Profile.STANDARD)}
-    full = {e.name for e in extractors_for(Profile.FULL)}
-    assert lite < standard <= full
+    assert lite < standard
     assert "table_storage_metrics" in standard - lite
+    # decision 17: 'full' is gone, folded into standard
+    assert standard == {e.name for e in EXTRACTORS}
+    import pytest
+
+    with pytest.raises(ValueError, match="folded into 'standard'"):
+        Profile.parse("full")
 
 
 def test_source_bodies_are_declared():

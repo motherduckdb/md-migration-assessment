@@ -26,18 +26,31 @@ from ..privacy import PrivacyClass
 
 
 class Profile(IntEnum):
-    """Collection profiles, ordered by privilege requirements."""
+    """Collection profiles, ordered by privilege requirements.
+
+    Two tiers only (decision 17, 2026-08-19): 'full' was folded into
+    'standard'. After decisions 15/16 removed per-query collection, the
+    tier held nothing but hour/day-grained aggregates needing the same
+    role classes standard already touches — an extra tier whose only
+    effect was making default collections incomplete.
+    """
 
     LITE = 1
     STANDARD = 2
-    FULL = 3
 
     @classmethod
     def parse(cls, name: str) -> "Profile":
+        if name.lower() == "full":
+            raise ValueError(
+                "profile 'full' was folded into 'standard' (decision 17): "
+                "a standard collection now includes the workload aggregates. "
+                "Re-run with --profile standard (an existing 'full' database "
+                "must be re-collected)."
+            )
         try:
             return cls[name.upper()]
         except KeyError:
-            raise ValueError(f"unknown profile {name!r}; use lite|standard|full") from None
+            raise ValueError(f"unknown profile {name!r}; use lite|standard") from None
 
 
 @dataclass(frozen=True)
@@ -665,7 +678,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="warehouse_metering_history",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="warehouse_metering_history.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
@@ -676,7 +689,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="warehouse_load_history",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="warehouse_load_history.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
@@ -687,7 +700,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="metering_daily_history",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="metering_daily_history.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
@@ -697,7 +710,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="copy_history",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="copy_history.sql",
         info_schema_sql=None,
         scope_columns={"database": "table_catalog_name", "schema": "table_schema_name"},
@@ -713,7 +726,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="pipe_usage_history",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="pipe_usage_history.sql",
         info_schema_sql=None,
         # PIPE_USAGE_HISTORY has no residency columns; database/schema are
@@ -740,7 +753,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="task_history",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="task_history.sql",
         info_schema_sql=None,
         scope_columns={"database": "database_name", "schema": "schema_name"},
@@ -756,7 +769,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="login_history",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="login_history.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.SECURITY_VIEWER or IMPORTED PRIVILEGES",
@@ -775,7 +788,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="query_concurrency",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="query_concurrency.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
@@ -791,7 +804,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="query_tag_fingerprints",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="query_tag_fingerprints.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
@@ -806,7 +819,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="client_app_fingerprints",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="client_app_fingerprints.sql",
         info_schema_sql=None,
         required_privilege=(
@@ -821,7 +834,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="query_shapes",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="query_shapes.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
@@ -833,7 +846,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="query_workload_rollup",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="query_workload_rollup.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",
@@ -845,7 +858,7 @@ EXTRACTORS: list[Extractor] = [
     Extractor(
         name="query_dialect_constructs",
         category="workload",
-        min_profile=Profile.FULL,
+        min_profile=Profile.STANDARD,
         account_usage_sql="query_dialect_constructs.sql",
         info_schema_sql=None,
         required_privilege="SNOWFLAKE.GOVERNANCE_VIEWER or IMPORTED PRIVILEGES",

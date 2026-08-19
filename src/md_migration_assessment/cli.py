@@ -32,7 +32,7 @@ def _main(
 
 @app.command()
 def collect(
-    profile: str = typer.Option("standard", help="lite | standard | full"),
+    profile: str = typer.Option("standard", help="lite | standard"),
     output: str = typer.Option("assessment.duckdb", help="Local output database path."),
     scope: list[str] = typer.Option(
         None, "--scope", help="Limit collection to DB or DB.SCHEMA (repeatable)."

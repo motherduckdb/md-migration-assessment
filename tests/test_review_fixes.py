@@ -127,7 +127,7 @@ def test_sizing_relation_exists_even_without_table_evidence(out_db):
     """P2: an entirely invisible scope must yield an empty sizing relation
     with coverage recorded in meta — not 'relation does not exist'."""
     source = FakeSource(
-        account_usage={"tables": Exception(NOT_AUTHORIZED)},
+        account_usage=dict(REALISTIC, tables=Exception(NOT_AUTHORIZED)),
         info_schema={"tables": {"APPDB": Exception(NOT_AUTHORIZED)}},
         databases=["APPDB"],
     )

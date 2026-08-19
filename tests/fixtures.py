@@ -367,6 +367,11 @@ WORKLOAD = {
     ]),
 }
 
+# Standard collections include the workload extracts (decision 17 folded the
+# 'full' profile into 'standard'), so a REALISTIC standard-profile source
+# carries the workload evidence too.
+REALISTIC.update(WORKLOAD)
+
 
 REALISTIC_SHOW = {
     "streams": _t([

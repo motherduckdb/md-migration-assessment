@@ -48,7 +48,7 @@ def full_source() -> FakeSource:
     )
 
 
-def collect(out_db, profile=Profile.FULL, history_days=30, source=None):
+def collect(out_db, profile=Profile.STANDARD, history_days=30, source=None):
     source = source or full_source()
     coll = run_collection(
         out_db, source, profile=profile, history_days=history_days
@@ -96,9 +96,10 @@ def test_query_history_is_read_only_via_server_side_aggregation():
             assert not leaked, (ex.name, leaked)
 
 
-def test_workload_extracts_are_full_profile_only():
+def test_workload_extracts_are_standard_profile():
+    # decision 17: 'full' folded into 'standard'
     for ex in WORKLOAD_EXTRACTORS:
-        assert ex.min_profile is Profile.FULL, ex.name
+        assert ex.min_profile is Profile.STANDARD, ex.name
         assert ex.window_from_history_days, ex.name
 
 
@@ -176,7 +177,7 @@ def test_pipe_usage_scope_filters_server_side(out_db):
 
     source = full_source()
     run_collection(
-        out_db, source, profile=Profile.FULL,
+        out_db, source, profile=Profile.STANDARD,
         scope=Scope.parse(["APPDB", "OTHERDB.S2"]),
     )
     rendered = [q for q in source.queries if "pipe_usage_history" in q]
@@ -191,8 +192,8 @@ def test_pipe_usage_scope_filters_server_side(out_db):
 # ── collection behavior ─────────────────────────────────────────────────
 
 
-def test_standard_profile_records_workload_as_not_requested(out_db):
-    coll, _ = collect(out_db, profile=Profile.STANDARD)
+def test_lite_profile_records_workload_as_not_requested(out_db):
+    coll, _ = collect(out_db, profile=Profile.LITE)
     runs = extract_runs(out_db, coll)
     for name in WORKLOAD_NAMES:
         assert runs[name]["status"] == "not_requested", name
