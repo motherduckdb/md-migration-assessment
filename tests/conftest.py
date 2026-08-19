@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
 
 from md_migration_assessment.collect.snowflake import SessionInfo
+
+#: The fake's server clock: fixed so tests can assert coverage-window
+#: arithmetic exactly (bounds must derive from the SERVER anchor, never the
+#: client clock — client/server skew breaks ordering arguments).
+SERVER_ANCHOR = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
 
 _AU_RE = re.compile(r"snowflake\.account_usage\.(\w+)", re.IGNORECASE)
 # Several M3c aggregate extracts read the same view (QUERY_HISTORY), so the
@@ -97,6 +103,12 @@ class FakeSource:
 
     def session_info(self) -> SessionInfo:
         return SessionInfo(account="TESTACCT", version="9.9.9", region="AWS_US_WEST_2")
+
+    def server_time(self):
+        # recorded in .queries so tests can assert the anchor is captured
+        # BEFORE the extract SQL executes
+        self.queries.append("<server_time>")
+        return SERVER_ANCHOR
 
 
 @pytest.fixture()

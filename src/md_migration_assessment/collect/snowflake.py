@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from itertools import chain
 from typing import Iterable, Iterator
 
@@ -183,6 +184,20 @@ class SnowflakeSource:
         )
         account, version, region = cur.fetchone()
         return SessionInfo(account=account, version=version, region=region)
+
+    def server_time(self) -> datetime:
+        """Snowflake's own clock, as a UTC-aware datetime.
+
+        Coverage-window metadata must be anchored to the server clock:
+        client/server skew means a client timestamp captured before an
+        extract runs can still exceed the SQL's CURRENT_TIMESTAMP.
+        """
+        cur = self._conn.cursor()
+        cur.execute("SELECT current_timestamp()")
+        (ts,) = cur.fetchone()
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(timezone.utc)
 
     def close(self) -> None:
         self._conn.close()

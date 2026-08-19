@@ -134,27 +134,36 @@ def test_concurrency_observation_stops_at_the_latency_watermark():
 def test_watermark_is_disclosed_in_actual_window_end(out_db):
     from datetime import timedelta
 
-    coll, _ = collect(out_db)
+    from conftest import SERVER_ANCHOR
+
+    coll, source = collect(out_db)
     rows = {
-        r[0]: (r[1], r[2], r[3])
+        r[0]: (r[1], r[2])
         for r in out_db.execute(
-            "SELECT extractor, actual_window_start, actual_window_end, started_at "
+            "SELECT extractor, actual_window_start, actual_window_end "
             "FROM meta.extract_runs WHERE collection_id = ? "
             "AND extractor IN ('query_concurrency', 'query_workload_rollup')",
             [str(coll.collection_id)],
         ).fetchall()
     }
-    conc_start, conc_end, conc_began = rows["query_concurrency"]
-    roll_start, roll_end, roll_began = rows["query_workload_rollup"]
-    # bounds derive from the PRE-execution clock: the SQL's server-side
-    # CURRENT_TIMESTAMP fires after started_at, so recorded coverage is a
-    # floor and can never claim beyond the SQL watermark (review round 3)
-    assert conc_end == conc_began - timedelta(minutes=45)
-    assert conc_start == conc_began - timedelta(days=30)
-    assert roll_end == roll_began
+    conc_start, conc_end = rows["query_concurrency"]
+    roll_start, roll_end = rows["query_workload_rollup"]
+    # Bounds derive from SNOWFLAKE'S clock (review round 4): a client
+    # timestamp cannot bound the SQL's server-side CURRENT_TIMESTAMP under
+    # clock skew, so the runner anchors on source.server_time().
+    assert conc_end == SERVER_ANCHOR - timedelta(minutes=45)
+    assert conc_start == SERVER_ANCHOR - timedelta(days=30)
+    assert roll_end == SERVER_ANCHOR
+    # ...and the anchor is captured BEFORE the extract SQL executes, which
+    # is what makes it a floor by server-clock statement ordering
+    conc_sql_idx = next(
+        i for i, q in enumerate(source.queries)
+        if "md-assess-extract: query_concurrency" in q
+    )
+    assert source.queries[conc_sql_idx - 1] == "<server_time>"
     # same requested window, but concurrency's observed end lags 45 minutes
-    assert abs((roll_end - conc_end) - timedelta(minutes=45)) < timedelta(seconds=5)
-    assert abs(roll_start - conc_start) < timedelta(seconds=5)
+    assert roll_end - conc_end == timedelta(minutes=45)
+    assert roll_start == conc_start
 
 
 def test_dialect_scan_keeps_text_inside_aggregates():

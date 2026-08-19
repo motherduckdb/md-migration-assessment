@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Iterable, Protocol
 
 import duckdb
@@ -54,6 +54,8 @@ class Source(Protocol):
     def list_databases(self) -> list[str]: ...
 
     def session_info(self) -> SessionInfo: ...
+
+    def server_time(self) -> datetime: ...
 
 
 @dataclass(frozen=True)
@@ -355,23 +357,23 @@ def _run_extractor(
                 scope_pred=scope_pred,
                 window_days=window_days,
             )
+            # Anchor from SNOWFLAKE'S clock, captured before the extract
+            # executes: statement order on the one server clock guarantees
+            # anchor <= the extract SQL's CURRENT_TIMESTAMP, so the recorded
+            # window is a floor of true coverage regardless of client clock
+            # skew or transfer time. Extracts with a latency watermark
+            # observe up to now - lag; the gap is disclosed, never observed.
+            anchor = source.server_time() if window_days is not None else None
             ing = _Ingestor(con, coll, ex.target_table)
             ing.ingest(source.reader(sql))
             run.rows_written = ing.finish()
             run.status = "complete"
             run.source_used = "account_usage"
             if window_days is not None:
-                # Bounds derive from the PRE-execution clock (started_at):
-                # the SQL's CURRENT_TIMESTAMP fires at server execution,
-                # strictly after that capture, so the recorded window is a
-                # floor of true coverage — a slow transfer can never make
-                # actual_window_end claim time beyond the SQL watermark.
-                # Extracts with a latency watermark observe up to now - lag;
-                # the gap is disclosed here, never presented as observed.
-                run.actual_window_end = run.started_at - timedelta(
+                run.actual_window_end = anchor - timedelta(
                     minutes=ex.window_end_lag_minutes
                 )
-                run.actual_window_start = run.started_at - timedelta(days=window_days)
+                run.actual_window_start = anchor - timedelta(days=window_days)
             return run
         except Exception as exc:  # noqa: BLE001 — every failure becomes coverage metadata
             au_error = exc
