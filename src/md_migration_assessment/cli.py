@@ -97,7 +97,13 @@ def collect(
                 covered = con.execute(
                     "SELECT count(DISTINCT extractor) FROM meta.extract_runs"
                 ).fetchone()[0]
-                complete_coverage = covered == len(EXTRACTORS)
+                finished = con.execute(
+                    "SELECT finished_at FROM meta.collections"
+                ).fetchone()[0]
+                # consistent interrupted state = full coverage rows AND the
+                # collection visibly unfinished (a second Ctrl+C can land
+                # inside the repair and leave either half undone)
+                complete_coverage = covered == len(EXTRACTORS) and finished is None
             except Exception:  # noqa: BLE001
                 complete_coverage = False
             if complete_coverage:

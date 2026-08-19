@@ -298,14 +298,16 @@ def run_collection(
                                 f"({prior_status} in existing collection)")
                 continue
             if prior_status is not None:
-                # replace, never accrete: the old coverage row goes and so
-                # does the old raw evidence — a retry that fails before
-                # ingesting must not leave stale rows behind a failed
-                # status (review, 2026-08-19)
                 db.delete_extract_run(con, coll, ex.name)
-                if not _IDENTIFIER_RE.match(ex.target_table):
-                    raise ValueError(f"bad target table name {ex.target_table!r}")
-                con.execute(f'DROP TABLE IF EXISTS raw."{ex.target_table}"')
+            # Replace, never accrete: before ANY run, the extractor's raw
+            # target must not exist — unconditionally, because stale raw
+            # evidence can exist even WITHOUT a coverage row (a kill between
+            # ingest and coverage recording), and a retry that fails before
+            # ingesting must not leave a previous attempt's rows behind a
+            # failed status (review rounds 1-2, 2026-08-19).
+            if not _IDENTIFIER_RE.match(ex.target_table):
+                raise ValueError(f"bad target table name {ex.target_table!r}")
+            con.execute(f'DROP TABLE IF EXISTS raw."{ex.target_table}"')
             _emit(progress, f"[{i + 1}/{total}] {ex.name}: running")
             run = _run_extractor(con, source, coll, ex, profile, scope, history_days)
             db.record_extract_run(con, coll, run)
@@ -334,8 +336,13 @@ def _ensure_interrupt_coverage(
 ) -> None:
     """Ctrl+C landed somewhere in the orchestration: repair the coverage
     contract by recording an 'interrupted' row for every extractor that has
-    none. finished_at is left NULL (or was already cleared by a resume) —
-    the collection is visibly unfinished and resumable."""
+    none, and make sure the collection reads as unfinished — the interrupt
+    can even land after finish_collection commits but before it returns
+    (review round 2, 2026-08-19), so finished_at is explicitly cleared: a
+    run that exits by interrupt never leaves a 'finished' stamp. If the
+    work truly all completed, the next --resume skips everything and
+    re-stamps it."""
+    db.reopen_collection(con, coll)
     have = {
         r[0]
         for r in con.execute(

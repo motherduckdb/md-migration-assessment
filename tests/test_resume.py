@@ -209,6 +209,62 @@ def test_failed_retry_leaves_no_stale_raw_evidence(out_db):
     assert out_db.execute("SELECT count(*) FROM report.sizing").fetchone()[0] == 0
 
 
+def test_stale_raw_without_coverage_row_is_still_dropped(out_db):
+    """Review round 2, 2026-08-19: a kill between raw ingestion and coverage
+    recording leaves raw data with NO coverage row. Resume treats the
+    extractor as missing — the raw target must be dropped anyway, so a
+    retry that fails cannot resurrect the stale evidence."""
+    run_collection(out_db, make_source(), profile=Profile.FULL)
+    assert out_db.execute("SELECT count(*) FROM raw.tables").fetchone()[0] > 0
+    # simulate the kill window: raw rows exist, coverage row does not
+    out_db.execute("DELETE FROM meta.extract_runs WHERE extractor = 'tables'")
+    out_db.execute("UPDATE meta.collections SET finished_at = NULL")
+    source = make_source(tables=RuntimeError("boom"))
+    source.info_schema = {"tables": {"APPDB": RuntimeError("boom")}}
+    run_collection(out_db, source, profile=Profile.FULL, resume=True)
+    assert out_db.execute(
+        "SELECT status FROM meta.extract_runs WHERE extractor = 'tables'"
+    ).fetchone()[0] == "failed"
+    assert out_db.execute(
+        "SELECT count(*) FROM information_schema.tables "
+        "WHERE table_schema = 'raw' AND table_name = 'tables'"
+    ).fetchone()[0] == 0
+    from md_migration_assessment.report import build_report
+
+    build_report(out_db)
+    assert out_db.execute("SELECT count(*) FROM report.sizing").fetchone()[0] == 0
+
+
+def test_interrupt_after_finish_commit_clears_finished_at(out_db, monkeypatch):
+    """Review round 2, 2026-08-19: Ctrl+C delivered after finish_collection
+    commits but before it returns must not leave the collection stamped
+    finished — a run that exits by interrupt never claims completion."""
+    from md_migration_assessment import db as db_module
+
+    real_finish = db_module.finish_collection
+
+    def finish_then_interrupt(con, coll):
+        real_finish(con, coll)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(db_module, "finish_collection", finish_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        run_collection(out_db, make_source(), profile=Profile.FULL)
+    assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0] is None
+    # all coverage rows are present, so a resume just re-stamps it
+    st = statuses_all(out_db)
+    assert set(st) == {e.name for e in EXTRACTORS}
+    monkeypatch.setattr(db_module, "finish_collection", real_finish)
+    run_collection(out_db, make_source(), profile=Profile.FULL, resume=True)
+    assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
+
+
+def statuses_all(con):
+    return dict(con.execute(
+        "SELECT extractor, status FROM meta.extract_runs"
+    ).fetchall())
+
+
 def test_resume_reopens_a_finished_collection(out_db):
     """Review, 2026-08-19: a finished collection with failed extractors is
     resumable; an interrupted retry must not leave finished_at set while
