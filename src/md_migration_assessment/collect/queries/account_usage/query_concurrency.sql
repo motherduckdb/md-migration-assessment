@@ -98,3 +98,7 @@ FROM (
     )
 )
 GROUP BY 1, 2
+-- a watermark landing exactly on an hour boundary would otherwise open a
+-- terminal bucket containing only the zero-duration endpoint carrier: an
+-- hour with no observed time must not emit a row
+HAVING sum(segment_seconds) > 0

@@ -361,11 +361,17 @@ def _run_extractor(
             run.status = "complete"
             run.source_used = "account_usage"
             if window_days is not None:
-                now = utcnow()
-                # extracts with a latency watermark observe up to now - lag;
-                # the gap is disclosed here, never presented as observed
-                run.actual_window_end = now - timedelta(minutes=ex.window_end_lag_minutes)
-                run.actual_window_start = now - timedelta(days=window_days)
+                # Bounds derive from the PRE-execution clock (started_at):
+                # the SQL's CURRENT_TIMESTAMP fires at server execution,
+                # strictly after that capture, so the recorded window is a
+                # floor of true coverage — a slow transfer can never make
+                # actual_window_end claim time beyond the SQL watermark.
+                # Extracts with a latency watermark observe up to now - lag;
+                # the gap is disclosed here, never presented as observed.
+                run.actual_window_end = run.started_at - timedelta(
+                    minutes=ex.window_end_lag_minutes
+                )
+                run.actual_window_start = run.started_at - timedelta(days=window_days)
             return run
         except Exception as exc:  # noqa: BLE001 — every failure becomes coverage metadata
             au_error = exc

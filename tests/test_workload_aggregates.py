@@ -122,6 +122,9 @@ def test_concurrency_observation_stops_at_the_latency_watermark():
     assert "LEAST(COALESCE(end_time, CURRENT_TIMESTAMP)" in sql
     # exact-endpoint carriers via clamping (duplicates net out)
     assert "GREATEST(DATEADD(day, -{window_days}, CURRENT_TIMESTAMP)" in sql
+    # an hour-aligned watermark must not open a zero-duration terminal
+    # bucket (review round 3, 2026-08-19)
+    assert "HAVING sum(segment_seconds) > 0" in sql
     # no other extract silently claims a lag it does not implement
     for other in M3C:
         if other.name != "query_concurrency":
@@ -133,16 +136,22 @@ def test_watermark_is_disclosed_in_actual_window_end(out_db):
 
     coll, _ = collect(out_db)
     rows = {
-        r[0]: (r[1], r[2])
+        r[0]: (r[1], r[2], r[3])
         for r in out_db.execute(
-            "SELECT extractor, actual_window_start, actual_window_end "
+            "SELECT extractor, actual_window_start, actual_window_end, started_at "
             "FROM meta.extract_runs WHERE collection_id = ? "
             "AND extractor IN ('query_concurrency', 'query_workload_rollup')",
             [str(coll.collection_id)],
         ).fetchall()
     }
-    conc_start, conc_end = rows["query_concurrency"]
-    roll_start, roll_end = rows["query_workload_rollup"]
+    conc_start, conc_end, conc_began = rows["query_concurrency"]
+    roll_start, roll_end, roll_began = rows["query_workload_rollup"]
+    # bounds derive from the PRE-execution clock: the SQL's server-side
+    # CURRENT_TIMESTAMP fires after started_at, so recorded coverage is a
+    # floor and can never claim beyond the SQL watermark (review round 3)
+    assert conc_end == conc_began - timedelta(minutes=45)
+    assert conc_start == conc_began - timedelta(days=30)
+    assert roll_end == roll_began
     # same requested window, but concurrency's observed end lags 45 minutes
     assert abs((roll_end - conc_end) - timedelta(minutes=45)) < timedelta(seconds=5)
     assert abs(roll_start - conc_start) < timedelta(seconds=5)
