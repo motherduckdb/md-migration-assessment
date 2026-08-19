@@ -135,13 +135,17 @@ def test_pipe_usage_excludes_hidden_auto_refresh_pipes():
 def test_pipe_usage_classifies_named_rows_against_actual_pipes():
     """A non-NULL PIPE_NAME can be an Iceberg table with automated refresh,
     not a pipe. Rows must be classified against ACCOUNT_USAGE.PIPES and
-    unmatched rows kept under an explicit category — never presumed
-    Snowpipe (review round 2, 2026-08-19)."""
+    unmatched rows kept under a NEUTRAL category — an unmatched row may
+    also be a pipe the collecting role cannot see (PIPES is filtered by
+    role visibility), so it is missing evidence, never presumed Snowpipe
+    and never presumed refresh (review rounds 2-3, 2026-08-19)."""
     sql = _executable_sql("pipe_usage_history.sql")
     assert "left join snowflake.account_usage.pipes" in sql
     assert "as source_kind" in sql
     assert "'snowpipe'" in sql
-    assert "'unclassified_refresh'" in sql
+    assert "'unclassified'" in sql
+    # the category must stay neutral: no refresh claim baked into the value
+    assert "'unclassified_refresh'" not in sql
 
 
 def test_pipe_usage_scope_filters_server_side(out_db):

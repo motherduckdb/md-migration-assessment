@@ -6,9 +6,12 @@
 -- A non-NULL PIPE_NAME is documented as either a pipe OR an Iceberg table
 -- with automated refresh, so rows are classified against the account's
 -- actual pipe objects (ACCOUNT_USAGE.PIPES shares the PIPE_ID keyspace and
--- retains dropped pipes): matched rows are 'snowpipe'; unmatched rows —
--- Iceberg automated refresh, or a pipe aged out of the PIPES view — are
--- 'unclassified_refresh', never presumed Snowpipe workload.
+-- retains dropped pipes): matched rows are 'snowpipe'; unmatched rows are
+-- 'unclassified' — Iceberg automated refresh, a pipe aged out of the PIPES
+-- view, OR a real pipe the collecting role cannot see (PIPES is filtered by
+-- role visibility, so OBJECT_VIEWER alone does not guarantee every pipe
+-- joins). Unmatched is a statement of missing evidence, not refresh
+-- activity — and never presumed Snowpipe workload.
 -- Database/schema derive from the qualified name so --scope filtering holds
 -- server-side (a quoted pipe identifier containing dots would mis-split and
 -- be excluded — fail-closed, never a leak).
@@ -17,7 +20,7 @@ SELECT
     split_part(u.pipe_name, '.', 1) AS pipe_database,
     split_part(u.pipe_name, '.', 2) AS pipe_schema,
     u.pipe_name AS pipe_name,
-    IFF(p.pipe_id IS NOT NULL, 'snowpipe', 'unclassified_refresh') AS source_kind,
+    IFF(p.pipe_id IS NOT NULL, 'snowpipe', 'unclassified') AS source_kind,
     CAST(u.start_time AS DATE) AS usage_date,
     sum(u.credits_used) AS credits_used,
     sum(u.bytes_inserted) AS bytes_inserted,
