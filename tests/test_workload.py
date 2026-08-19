@@ -115,6 +115,42 @@ def test_copy_history_never_retains_file_names_or_stage_paths():
     assert "stage_location" not in projection
 
 
+def test_copy_history_separates_load_outcomes():
+    """COPY_HISTORY includes failed and skipped attempts; the extract must
+    keep outcomes distinguishable so they can never be counted as writes."""
+    sql = _executable_sql("copy_history.sql")
+    assert "load_status" in sql
+    for status in ("'loaded'", "'partially loaded'", "'load failed'"):
+        assert status in sql, status
+
+
+def test_pipe_usage_excludes_hidden_auto_refresh_pipes():
+    """NULL-name PIPE_USAGE_HISTORY rows are Snowflake's hidden auto-refresh
+    pipes (external table / Iceberg metadata refresh), not Snowpipe workload."""
+    sql = _executable_sql("pipe_usage_history.sql")
+    assert "pipe_name is not null" in sql
+    assert "pipe_id" in sql
+
+
+def test_pipe_usage_scope_filters_server_side(out_db):
+    """PIPE_USAGE_HISTORY has no residency columns; --scope must still hold —
+    a scoped run may never persist out-of-scope pipe names (P1, 2026-08-19)."""
+    from md_migration_assessment.collect.runner import Scope
+
+    source = full_source()
+    run_collection(
+        out_db, source, profile=Profile.FULL,
+        scope=Scope.parse(["APPDB", "OTHERDB.S2"]),
+    )
+    rendered = [q for q in source.queries if "pipe_usage_history" in q]
+    assert rendered
+    assert "split_part(pipe_name, '.', 1) IN ('APPDB')" in rendered[0]
+    assert (
+        "(split_part(pipe_name, '.', 1) = 'OTHERDB' "
+        "AND split_part(pipe_name, '.', 2) = 'S2')" in rendered[0]
+    )
+
+
 # ── collection behavior ─────────────────────────────────────────────────
 
 
@@ -208,6 +244,26 @@ def test_ingestion_inventory_carries_provenance(out_db):
     assert "M3c" in plain[7]  # note names the missing MERGE/INSERT evidence
     assert plain[8] and plain[9] and plain[10]
     assert plain[11] == "complete"
+
+
+def test_failed_copy_attempts_are_evidence_not_writes(out_db):
+    """A table whose only load attempts failed must not appear as written,
+    and failed files must not inflate a written table's counts — but the
+    failed rows stay in raw.copy_history as evidence."""
+    coll, _ = collect(out_db)
+    tables = {
+        r[0]
+        for r in out_db.execute(
+            "SELECT table_name FROM report.ingestion_inventory "
+            "WHERE collection_id = ?",
+            [str(coll.collection_id)],
+        ).fetchall()
+    }
+    assert "BROKEN_T" not in tables
+    raw_failed = out_db.execute(
+        "SELECT count(*) FROM raw.copy_history WHERE load_status = 'failed'"
+    ).fetchone()[0]
+    assert raw_failed == 2  # PLAIN's failed day + BROKEN_T
 
 
 def test_ingestion_inventory_has_no_stale_labels():

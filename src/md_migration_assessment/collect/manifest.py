@@ -707,10 +707,21 @@ EXTRACTORS: list[Extractor] = [
         min_profile=Profile.FULL,
         account_usage_sql="pipe_usage_history.sql",
         info_schema_sql=None,
+        # PIPE_USAGE_HISTORY has no residency columns; database/schema are
+        # derived from the fully qualified PIPE_NAME so scoped runs never
+        # persist out-of-scope pipe names (review finding, 2026-08-19).
+        scope_columns={
+            "database": "split_part(pipe_name, '.', 1)",
+            "schema": "split_part(pipe_name, '.', 2)",
+        },
         required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
         window_days=30,
         window_from_history_days=True,
-        sensitive_fields={"pipe_name": PrivacyClass.OBJECT_NAME},
+        sensitive_fields={
+            "pipe_database": PrivacyClass.OBJECT_NAME,
+            "pipe_schema": PrivacyClass.OBJECT_NAME,
+            "pipe_name": PrivacyClass.OBJECT_NAME,
+        },
     ),
     Extractor(
         name="task_history",

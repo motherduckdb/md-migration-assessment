@@ -370,6 +370,10 @@ def _build_ingestion_inventory(con: duckdb.DuckDBPyConnection) -> None:
         FROM raw.copy_history c
         LEFT JOIN meta.extract_runs r
             ON r.collection_id = c.collection_id AND r.extractor = 'copy_history'
+        -- outcome rows: only successful loads are writes. Failed/skipped
+        -- attempts stay in raw.copy_history as evidence but must never
+        -- produce days_with_writes or supporting events (review, 2026-08-19).
+        WHERE c.load_status = 'loaded'
         GROUP BY c.collection_id, c.table_catalog, c.table_schema,
                  c.table_name, c.load_method
     """)

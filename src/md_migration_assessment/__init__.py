@@ -14,7 +14,10 @@ __version__ = "0.1.0.dev0"
 # v6 (M3b): aggregate workload extracts (warehouse metering/load, daily
 #   metering, copy/pipe/task history, login-derived driver inventory).
 #   Per-query QUERY_HISTORY is deliberately absent (spec decision 15).
-RAW_SCHEMA_VERSION = 6
+# v7 (M3b review): copy_history += load_status outcome rows (failed COPY
+#   attempts are evidence, not writes); pipe_usage_history += pipe_id and
+#   name-derived residency columns, hidden auto-refresh rows excluded.
+RAW_SCHEMA_VERSION = 7
 
 # Version of the meta.* table shapes.
 META_SCHEMA_VERSION = 1
