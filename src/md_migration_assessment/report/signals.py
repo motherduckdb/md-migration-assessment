@@ -230,6 +230,80 @@ SIGNALS: list[Signal] = [
            catalog_col="database_name"),
     _probe("snowpipe_streaming", "platform", "snowpipe_streaming_client_history",
            "true", "client_name"),
+    # ── M3d: inventory expansion (Corrdyn review, decision 18) ──────
+    _probe("object_dependencies", "code", "object_dependencies",
+           "true",
+           "referencing_database || '.' || referencing_schema || '.' || referencing_object_name",
+           catalog_col="referencing_database"),
+    _probe("primary_key_constraints", "table_layout", "table_constraints",
+           "constraint_type = 'PRIMARY KEY'", _TBL, catalog_col="table_catalog"),
+    _probe("unique_constraints", "table_layout", "table_constraints",
+           "constraint_type = 'UNIQUE'", _TBL, catalog_col="table_catalog"),
+    _probe("foreign_key_constraints", "table_layout", "referential_constraints",
+           "true",
+           "constraint_catalog || '.' || constraint_schema || '.' || constraint_name",
+           catalog_col="constraint_catalog"),
+    _probe("sequences", "table_layout", "sequences",
+           "true",
+           "sequence_catalog || '.' || sequence_schema || '.' || sequence_name",
+           catalog_col="sequence_catalog"),
+    _probe("file_formats", "platform", "file_formats",
+           "true",
+           "file_format_catalog || '.' || file_format_schema || '.' || file_format_name",
+           catalog_col="file_format_catalog"),
+    _probe("xml_file_formats", "platform", "file_formats",
+           "upper(coalesce(file_format_type, '')) = 'XML'",
+           "file_format_catalog || '.' || file_format_schema || '.' || file_format_name",
+           catalog_col="file_format_catalog"),
+    # parameters explicitly overridden at account level (level = 'ACCOUNT');
+    # defaults show an empty level
+    _probe("account_parameter_overrides", "platform", "account_parameters",
+           "upper(coalesce(level, '')) = 'ACCOUNT'", "key"),
+    _probe("network_policies", "security", "network_policies",
+           "true", "name"),
+    _probe("storage_integrations", "platform", "storage_integrations",
+           "true", "name"),
+    _probe("notification_integrations", "platform", "notification_integrations",
+           "true", "name"),
+    _probe("api_integrations", "platform", "api_integrations",
+           "true", "name"),
+    _probe("external_access_integrations", "platform", "external_access_integrations",
+           "true", "name"),
+    _probe("external_volumes", "platform", "external_volumes",
+           "true", "name"),
+    _probe("dynamic_table_refresh_activity", "platform", "dynamic_table_refresh_history",
+           "true",
+           "table_database || '.' || table_schema || '.' || table_name",
+           catalog_col="table_database"),
+    _probe("alerts", "platform", "alerts",
+           "true", "database_name || '.' || schema_name || '.' || name",
+           catalog_col="database_name"),
+    _probe("event_tables", "platform", "event_tables",
+           "true", "database_name || '.' || schema_name || '.' || name",
+           catalog_col="database_name"),
+    _probe("replication_groups", "platform", "replication_groups",
+           "true", "name"),
+    _probe("failover_groups", "platform", "failover_groups",
+           "true", "name"),
+    _probe("resource_monitors", "platform", "resource_monitors",
+           "true", "name"),
+    # custom probe: the RBAC-size number is distinct roles holding grants,
+    # not (role x object-type) rows — system roles excluded like custom_roles
+    Signal(
+        name="roles_with_privilege_grants",
+        category="security",
+        source_extractor="grants_to_roles_summary",
+        sql=(
+            "WITH hits AS (SELECT DISTINCT role_name AS obj "
+            'FROM raw."grants_to_roles_summary" '
+            "WHERE collection_id = '{cid}' AND role_name NOT IN "
+            "('ACCOUNTADMIN', 'ORGADMIN', 'GLOBALORGADMIN', 'SECURITYADMIN', "
+            "'SYSADMIN', 'USERADMIN', 'PUBLIC'))\n"
+            "SELECT (SELECT count(*) FROM hits) AS n,\n"
+            "       (SELECT coalesce(list(obj), []) FROM\n"
+            "          (SELECT DISTINCT obj FROM hits ORDER BY obj LIMIT 20)) AS sample_objects"
+        ),
+    ),
 ]
 
 

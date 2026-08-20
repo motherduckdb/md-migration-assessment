@@ -205,6 +205,60 @@ REALISTIC = {
         dict(name="ANALYST", owner="SECURITYADMIN", role_type="ROLE", comment=None),
         dict(name="DB_ROLE", owner="X", role_type="DATABASE_ROLE", comment=None),
     ]),
+    # ── M3d: inventory expansion ────────────────────────────────────────
+    "object_dependencies": _t([
+        dict(referencing_database="APPDB", referencing_schema="S1",
+             referencing_object_name="V_PLAIN", referencing_object_domain="VIEW",
+             referenced_database="APPDB", referenced_schema="S1",
+             referenced_object_name="PLAIN", referenced_object_domain="TABLE"),
+        dict(referencing_database="SNOWFLAKE", referencing_schema="X",
+             referencing_object_name="SYS_V", referencing_object_domain="VIEW",
+             referenced_database="SNOWFLAKE", referenced_schema="X",
+             referenced_object_name="SYS_T", referenced_object_domain="TABLE"),
+    ]),
+    "table_read_heat": _t([
+        dict(object_database="APPDB", object_schema="S1",
+             object_name="APPDB.S1.PLAIN", object_domain="Table",
+             read_date="2026-08-10", n_reads=420, n_distinct_readers=3,
+             first_read=None, last_read=None),
+    ]),
+    "grants_to_roles_summary": _t([
+        dict(role_name="ANALYST", granted_on="TABLE", n_grants=40,
+             n_privileges=2, n_objects=20, n_databases=1,
+             last_grant_created=None),
+        dict(role_name="ACCOUNTADMIN", granted_on="DATABASE", n_grants=5,
+             n_privileges=3, n_objects=2, n_databases=2,
+             last_grant_created=None),
+    ]),
+    "table_constraints": _t([
+        dict(table_catalog="APPDB", table_schema="S1", table_name="PLAIN",
+             constraint_name="PK_PLAIN", constraint_type="PRIMARY KEY"),
+        dict(table_catalog="APPDB", table_schema="S1", table_name="ORDERS",
+             constraint_name="UQ_ORDERS", constraint_type="UNIQUE"),
+    ]),
+    "referential_constraints": _t([
+        dict(constraint_catalog="APPDB", constraint_schema="S1",
+             constraint_name="FK_ORDERS_PLAIN", unique_constraint_catalog="APPDB",
+             unique_constraint_schema="S1", unique_constraint_name="PK_PLAIN",
+             match_option="FULL", update_rule="NO ACTION", delete_rule="NO ACTION"),
+    ]),
+    "sequences": _t([
+        dict(sequence_catalog="APPDB", sequence_schema="S1",
+             sequence_name="ORDER_ID_SEQ", data_type="NUMBER",
+             start_value=1, increment_by=1, comment=None),
+    ]),
+    "file_formats": _t([
+        dict(file_format_catalog="APPDB", file_format_schema="S1",
+             file_format_name="PQ", file_format_type="PARQUET", comment=None),
+        dict(file_format_catalog="APPDB", file_format_schema="S1",
+             file_format_name="LEGACY_XML", file_format_type="XML", comment=None),
+    ]),
+    "dynamic_table_refresh_history": _t([
+        dict(table_database="APPDB", table_schema="S1",
+             table_name="ORDERS_DYNAMIC", refresh_date="2026-08-10",
+             n_refreshes=24, n_succeeded=23, n_failed=1,
+             first_refresh=None, last_refresh=None),
+    ]),
 }
 
 
@@ -429,5 +483,72 @@ REALISTIC_SHOW = {
         dict(kind="OUTBOUND", owner_account="SELF", name="MDA_TEST_SHARE",
              database_name="APPDB", owner="ACCOUNTADMIN", listing_global_name=None,
              secure_objects_only="false", comment=None),
+    ]),
+    # ── M3d: inventory expansion ────────────────────────────────────────
+    "account_parameters": _t([
+        dict(key="TIMEZONE", value="America/Los_Angeles", default="America/Los_Angeles",
+             level="ACCOUNT", description="time zone", type="STRING"),
+        dict(key="WEEK_START", value="0", default="0", level="",
+             description="week start", type="NUMBER"),
+    ]),
+    "network_policies": _t([
+        dict(created_on="2026-01-01", name="CORP_ONLY", comment=None,
+             entries_in_allowed_ip_list=4, entries_in_blocked_ip_list=0,
+             entries_in_allowed_network_rules=1, entries_in_blocked_network_rules=0),
+    ]),
+    "storage_integrations": _t([
+        dict(created_on="2026-01-01", name="S3_INT", type="EXTERNAL_STAGE",
+             category="STORAGE", enabled="true", comment=None),
+    ]),
+    "notification_integrations": _t([
+        dict(created_on="2026-01-01", name="SNS_INT", type="QUEUE",
+             category="NOTIFICATION", enabled="true", comment=None),
+    ]),
+    "api_integrations": _t([
+        dict(created_on="2026-01-01", name="LAMBDA_GW", type="AWS_API_GATEWAY",
+             category="API", enabled="true", comment=None),
+    ]),
+    "external_access_integrations": _t([
+        dict(created_on="2026-01-01", name="OPENAI_EAI", enabled="true",
+             comment=None),
+    ]),
+    "external_volumes": _t([
+        dict(name="ICEBERG_VOL", allow_writes="true", comment=None),
+    ]),
+    "dynamic_tables": _t([
+        dict(created_on="2026-01-01", name="ORDERS_DYNAMIC", database_name="APPDB",
+             schema_name="S1", rows=1000, bytes=41000, owner="OWNER",
+             target_lag="15 minutes", refresh_mode="INCREMENTAL",
+             refresh_mode_reason=None, warehouse="ETL_WH",
+             text="CREATE DYNAMIC TABLE ... AS SELECT ...", comment=None),
+    ]),
+    "alerts": _t([
+        dict(created_on="2026-01-01", name="FRESHNESS_ALERT", database_name="APPDB",
+             schema_name="S1", owner="OWNER", comment=None, warehouse="ETL_WH",
+             schedule="60 MINUTE", state="started",
+             condition="SELECT count(*) FROM late", action="CALL notify()"),
+    ]),
+    "event_tables": _t([
+        dict(created_on="2026-01-01", name="APP_EVENTS", database_name="APPDB",
+             schema_name="S1", owner="OWNER", comment=None),
+    ]),
+    "replication_groups": _t([
+        dict(created_on="2026-01-01", name="RG1", type="REPLICATION",
+             is_primary="true", primary="MYORG.ACCT1",
+             object_types="DATABASES", allowed_databases="APPDB",
+             allowed_shares=None, replication_schedule="10 MINUTE"),
+    ]),
+    "failover_groups": _t([
+        dict(created_on="2026-01-01", name="FG1", type="FAILOVER",
+             is_primary="true", primary="MYORG.ACCT1",
+             object_types="DATABASES", allowed_databases="APPDB",
+             allowed_shares=None, replication_schedule="10 MINUTE"),
+    ]),
+    "resource_monitors": _t([
+        dict(name="MONTHLY_CAP", credit_quota=100.0, used_credits=12.5,
+             remaining_credits=87.5, level="ACCOUNT", frequency="MONTHLY",
+             start_time="2026-08-01", end_time=None, suspend_at=90,
+             suspend_immediately_at=100, created_on="2026-01-01",
+             owner="ACCOUNTADMIN", comment=None),
     ]),
 }

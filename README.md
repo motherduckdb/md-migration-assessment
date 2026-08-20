@@ -167,6 +167,27 @@ any role and report the objects that role can see.
 | query_shapes | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
 | query_workload_rollup | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
 | query_dialect_constructs | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Standard |
+| object_dependencies | standard | ACCOUNT_USAGE | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| table_read_heat | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.GOVERNANCE_VIEWER | Enterprise |
+| table_constraints | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| referential_constraints | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| sequences | lite | INFORMATION_SCHEMA | any role (objects visible to the role) | Standard |
+| file_formats | lite | ACCOUNT_USAGE + fallback | SNOWFLAKE.OBJECT_VIEWER | Standard |
+| grants_to_roles_summary | standard | ACCOUNT_USAGE (server-side aggregate) | SNOWFLAKE.SECURITY_VIEWER | Standard |
+| dynamic_table_refresh_history | standard | ACCOUNT_USAGE | SNOWFLAKE.USAGE_VIEWER | Standard |
+| account_parameters | standard | SHOW | any role | Standard |
+| network_policies | standard | SHOW | any role (policies visible to the role) | Standard |
+| storage_integrations | standard | SHOW | any role (integrations visible to the role) | Standard |
+| notification_integrations | standard | SHOW | any role (integrations visible to the role) | Standard |
+| api_integrations | standard | SHOW | any role (integrations visible to the role) | Standard |
+| external_access_integrations | standard | SHOW | any role (integrations visible to the role) | Standard |
+| external_volumes | standard | SHOW | any role (volumes visible to the role) | Standard |
+| dynamic_tables | standard | SHOW | any role (objects visible to the role) | Standard |
+| alerts | standard | SHOW | any role (objects visible to the role) | Standard |
+| event_tables | standard | SHOW | any role (objects visible to the role) | Standard |
+| replication_groups | standard | SHOW | any role (groups visible to the role) | Standard |
+| failover_groups | standard | SHOW | any role (groups visible to the role) | Business Critical |
+| resource_monitors | standard | SHOW | any role (monitors visible to the role) | Standard |
 
 The `lite` profile needs no ACCOUNT_USAGE access at all: any role sees its own
 objects through per-database INFORMATION_SCHEMA walks.

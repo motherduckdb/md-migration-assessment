@@ -33,7 +33,14 @@ __version__ = "0.1.0"
 #   (active_event_minutes dropped); the latency gap emits no rows and is
 #   disclosed via actual_window_end; query_shapes exempts the '(unhashed)'
 #   bucket from the top-N cap.
-RAW_SCHEMA_VERSION = 10
+# v11 (M3d, decision 18 — Corrdyn review): inventory expansion. New extracts:
+#   object_dependencies, table_read_heat (ACCESS_HISTORY read aggregate),
+#   table/referential constraints, sequences, file_formats,
+#   grants_to_roles_summary (aggregate only), dynamic_table_refresh_history,
+#   and SHOW-based account_parameters, network_policies, storage/notification/
+#   api/external-access integrations, external_volumes, dynamic_tables,
+#   alerts, event_tables, replication/failover groups, resource_monitors.
+RAW_SCHEMA_VERSION = 11
 
 # Version of the meta.* table shapes.
 # v2: 'interrupted' extract-run status (Ctrl+C leaves honest coverage rows;

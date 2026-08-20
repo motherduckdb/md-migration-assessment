@@ -96,6 +96,18 @@ def test_lite_profile(tmp_path, source):
         "WHERE table_name = 'ORDER_SUMMARY' AND view_definition IS NOT NULL"
     ).fetchall()
     assert vd, "expected a non-null view definition for owned view"
+    # M3d lag-free seeded fixtures: sequence, file format, PK + FK constraints
+    for table, predicate in [
+        ("raw.sequences", "sequence_name = 'MDA_ORDER_SEQ' AND "
+         "sequence_catalog = 'MDA_TEST_MAIN'"),
+        ("raw.file_formats", "file_format_name = 'MDA_CSV_FF' AND "
+         "file_format_type = 'CSV'"),
+        ("raw.table_constraints", "table_name = 'CUSTOMERS_DIM' AND "
+         "constraint_type = 'PRIMARY KEY'"),
+        ("raw.referential_constraints", "constraint_catalog = 'MDA_TEST_MAIN'"),
+    ]:
+        n = con.execute(f"SELECT count(*) FROM {table} WHERE {predicate}").fetchone()[0]
+        assert n >= 1, f"M3d seed fixture missing: {table} WHERE {predicate}"
     con.close()
 
 

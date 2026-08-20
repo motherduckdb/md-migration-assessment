@@ -179,6 +179,22 @@ STATEMENTS: list[str] = [
     SELECT customer, sum(amount) AS total FROM {DB1}.SALES.ORDERS GROUP BY customer
     """,
     # ── M2 feature objects: governance, pipeline, and platform signals ──
+    # M3d fixtures: sequence, named file format, and a PK/FK constraint pair
+    # (all lag-free via INFORMATION_SCHEMA)
+    f"CREATE OR REPLACE SEQUENCE {DB1}.SALES.MDA_ORDER_SEQ START = 1 INCREMENT = 1",
+    f"CREATE OR REPLACE FILE FORMAT {DB1}.SALES.MDA_CSV_FF TYPE = CSV SKIP_HEADER = 1",
+    f"""
+    CREATE OR REPLACE TABLE {DB1}.SALES.CUSTOMERS_DIM (
+        customer_id NUMBER(38,0) PRIMARY KEY,
+        name        VARCHAR(200)
+    )
+    """,
+    f"""
+    CREATE OR REPLACE TABLE {DB1}.SALES.ORDERS_FACT (
+        order_id    NUMBER(38,0) PRIMARY KEY,
+        customer_id NUMBER(38,0) REFERENCES {DB1}.SALES.CUSTOMERS_DIM(customer_id)
+    )
+    """,
     f"CREATE OR REPLACE STREAM {DB1}.SALES.ORDERS_STREAM ON TABLE {DB1}.SALES.ORDERS",
     f"CREATE OR REPLACE TABLE {DB1}.SALES.ORDERS_CLONE CLONE {DB1}.SALES.ORDERS",
     f"""
