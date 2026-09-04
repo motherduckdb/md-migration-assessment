@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import pyarrow as pa
 
-from conftest import NOT_AUTHORIZED, FakeSource, small_table
+from fake_snowflake import NOT_AUTHORIZED, FakeSource, small_table
 
-from md_migration_assessment.collect.manifest import EXTRACTORS, Profile
+from md_migration_assessment.sources.snowflake.manifest import EXTRACTORS, Profile
 from md_migration_assessment.collect.runner import Scope, run_collection
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 
 def statuses(con, coll):
@@ -34,7 +35,7 @@ def run_row(con, coll, extractor):
 
 def test_standard_happy_path(out_db):
     source = FakeSource()
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
 
     st = statuses(out_db, coll)
     # standard requests every extractor (decision 17 folded 'full' in)
@@ -56,13 +57,13 @@ def test_standard_happy_path(out_db):
     assert finished is not None
 
     # collection identity captured session info
-    account = out_db.execute("SELECT snowflake_account FROM meta.collections").fetchone()[0]
+    account = out_db.execute("SELECT source_deployment FROM meta.collections").fetchone()[0]
     assert account == "TESTACCT"
 
 
 def test_account_usage_denied_falls_back_to_information_schema(out_db):
     source = FakeSource(account_usage={"tables": Exception(NOT_AUTHORIZED)})
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
 
     row = run_row(out_db, coll, "tables")
     assert row["status"] == "complete"
@@ -77,7 +78,7 @@ def test_partial_fallback_records_actual_coverage(out_db):
         account_usage={"tables": Exception(NOT_AUTHORIZED)},
         info_schema={"tables": {"DB2": Exception(NOT_AUTHORIZED)}},
     )
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
 
     row = run_row(out_db, coll, "tables")
     assert row["status"] == "partial"
@@ -97,7 +98,7 @@ def test_all_fallback_databases_denied_is_unavailable(out_db):
         account_usage={"views": Exception(NOT_AUTHORIZED)},
         info_schema={"views": {"DB1": Exception(NOT_AUTHORIZED), "DB2": Exception(NOT_AUTHORIZED)}},
     )
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     row = run_row(out_db, coll, "views")
     assert row["status"] == "unavailable"
     assert row["error_category"] == "privilege"
@@ -105,7 +106,7 @@ def test_all_fallback_databases_denied_is_unavailable(out_db):
 
 def test_unexpected_error_is_failed_and_does_not_fall_back(out_db):
     source = FakeSource(account_usage={"columns": Exception("network timeout")})
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
 
     row = run_row(out_db, coll, "columns")
     assert row["status"] == "failed"
@@ -116,7 +117,7 @@ def test_unexpected_error_is_failed_and_does_not_fall_back(out_db):
 
 def test_no_fallback_extract_denied_is_unavailable(out_db):
     source = FakeSource(account_usage={"table_storage_metrics": Exception(NOT_AUTHORIZED)})
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     row = run_row(out_db, coll, "table_storage_metrics")
     assert row["status"] == "unavailable"
     # never presented as an observed zero: no raw table was created
@@ -129,7 +130,7 @@ def test_no_fallback_extract_denied_is_unavailable(out_db):
 
 def test_lite_profile_never_touches_account_usage(out_db):
     source = FakeSource()
-    coll = run_collection(out_db, source, profile=Profile.LITE)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.LITE)
 
     assert not any("account_usage" in q for q in source.queries)
     st = statuses(out_db, coll)
@@ -144,7 +145,7 @@ def test_scope_filters_account_usage_and_fallback_walk(out_db):
         databases=["SALES", "OTHER"],
     )
     scope = Scope.parse(["sales", "analytics.reporting"])
-    coll = run_collection(out_db, source, profile=Profile.STANDARD, scope=scope)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=scope)
 
     au = [q for q in source.queries if "account_usage.columns" in q][0]
     assert "table_catalog IN ('ANALYTICS', 'SALES')" in au or "'SALES'" in au
@@ -161,7 +162,7 @@ def test_scope_filters_account_usage_and_fallback_walk(out_db):
 def test_empty_result_is_observed_zero_with_complete_status(out_db):
     empty = pa.table({"table_catalog": pa.array([], pa.string())})
     source = FakeSource(account_usage={"tables": empty})
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     row = run_row(out_db, coll, "tables")
     assert row["status"] == "complete"
     assert row["rows_written"] == 0
@@ -193,7 +194,7 @@ def test_fallback_nonprivilege_error_is_failed_not_unavailable(out_db):
             }
         },
     )
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     row = run_row(out_db, coll, "tables")
     assert row["status"] == "failed"
     assert row["error_category"] == "error"
@@ -205,7 +206,7 @@ def test_fallback_mixed_error_kinds_partial_is_error_category(out_db):
         account_usage={"tables": Exception(NOT_AUTHORIZED)},
         info_schema={"tables": {"DB2": Exception("arrow_scan: get_next failed()")}},
     )
-    coll = run_collection(out_db, source, profile=Profile.STANDARD)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     row = run_row(out_db, coll, "tables")
     assert row["status"] == "partial"
     assert row["error_category"] == "error"

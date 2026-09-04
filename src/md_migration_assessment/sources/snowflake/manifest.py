@@ -1,124 +1,149 @@
-"""Extractor registry.
+"""Snowflake extractor manifest.
 
 Each extractor declares:
 
 - which collection profile first includes it,
 - its ACCOUNT_USAGE query and/or per-database INFORMATION_SCHEMA fallback
-  (SQL lives in ``queries/`` as resource files, individually overridable),
+  (SQL lives in ``queries/`` as resource files), or a SHOW command,
 - the columns usable for ``--scope`` filtering,
 - the least Snowflake privilege that satisfies it (for the README matrix and
   for ``meta.extract_runs``),
 - its sensitive fields, classified per :mod:`md_migration_assessment.privacy`.
 
-The extractor version recorded in ``meta.extract_runs`` is a content hash of
-the extract SQL, so query edits are visible in collection provenance without
-manual version bookkeeping.
+The authoring vocabulary here is Snowflake's (``account_usage_sql``,
+``info_schema_sql``, ``show_sql``); :func:`_ex` maps it onto the neutral
+:class:`~md_migration_assessment.collect.extractor.Extractor` model, whose
+ordered ``sources`` tuple the runner executes: SHOW is exclusive;
+ACCOUNT_USAGE runs only at ``standard`` (lite has no ACCOUNT_USAGE grants)
+and falls through to the INFORMATION_SCHEMA walk when unavailable.
 """
 
 from __future__ import annotations
 
-import hashlib
-from dataclasses import dataclass, field
-from enum import IntEnum
 from importlib import resources
 
-from ..privacy import PrivacyClass
+from ...collect.extractor import (
+    Command,
+    Extractor,
+    GlobalQuery,
+    PerDatabaseQuery,
+    Profile,
+)
+from ...collect.extractor import extractor_version as _neutral_version
+from ...collect.extractor import extractors_for as _neutral_extractors_for
+from ...privacy import PrivacyClass
 
+# Version of the raw.* table shapes. Bump on any change to an extract's column
+# set; schema migrations must be explicit (spec §3).
+# v2 (M2): tables += is_iceberg/is_dynamic/is_hybrid; functions += packages/
+#   runtime_version; new feature extracts (policies, tags, pipes, roles).
+# v3 (M2 review): new feature extracts (tasks, stages, listings).
+# v4 (M2 review follow-up): new shares extract.
+# v5 (M3a): external_tables, usage-history feature extracts, SHOW-based
+#   extracts (streams, warehouses, streamlits, notebooks, applications,
+#   application packages, catalog integrations, shares listing).
+# v6 (M3b): aggregate workload extracts (warehouse metering/load, daily
+#   metering, copy/pipe/task history, login-derived driver inventory).
+#   Per-query QUERY_HISTORY is deliberately absent (spec decision 15).
+# v7 (M3b review): copy_history += load_status outcome rows (failed COPY
+#   attempts are evidence, not writes); pipe_usage_history += pipe_id and
+#   name-derived residency columns, hidden auto-refresh rows excluded.
+# v8 (M3b review rounds 2-3): pipe_usage_history += source_kind — named
+#   rows classified against ACCOUNT_USAGE.PIPES; unmatched rows are
+#   'unclassified' (Iceberg automated refresh, an aged-out pipe, or a pipe
+#   hidden from the collecting role), never presumed Snowpipe.
+# v9 (M3c): server-side workload aggregates over QUERY_HISTORY — the GROUP
+#   BY runs inside Snowflake, nothing per-query or textual ever lands
+#   (spec decision 16): query_concurrency, query_tag_fingerprints,
+#   client_app_fingerprints, query_shapes, query_workload_rollup,
+#   query_dialect_constructs.
+# v10 (M3c review rounds 1-2): query_concurrency rebuilt on exact event
+#   timestamps with carriers bracketing the exact observation window
+#   [window start, now - 45min QUERY_HISTORY latency watermark] — columns
+#   become peak_concurrent_queries / avg_concurrent_queries / busy_seconds
+#   (active_event_minutes dropped); the latency gap emits no rows and is
+#   disclosed via actual_window_end; query_shapes exempts the '(unhashed)'
+#   bucket from the top-N cap.
+# v11 (M3d, decision 18 — Corrdyn review): inventory expansion. New extracts:
+#   object_dependencies, table_read_heat (ACCESS_HISTORY read aggregate),
+#   table/referential constraints, sequences, file_formats,
+#   grants_to_roles_summary (aggregate only), dynamic_table_refresh_history,
+#   and SHOW-based account_parameters, network_policies, storage/notification/
+#   api/external-access integrations, external_volumes, dynamic_tables,
+#   alerts, event_tables, replication/failover groups, resource_monitors.
+RAW_SCHEMA_VERSION = 11
 
-class Profile(IntEnum):
-    """Collection profiles, ordered by privilege requirements.
-
-    Two tiers only (decision 17, 2026-08-19): 'full' was folded into
-    'standard'. After decisions 15/16 removed per-query collection, the
-    tier held nothing but hour/day-grained aggregates needing the same
-    role classes standard already touches — an extra tier whose only
-    effect was making default collections incomplete.
-    """
-
-    LITE = 1
-    STANDARD = 2
-
-    @classmethod
-    def parse(cls, name: str) -> "Profile":
-        if name.lower() == "full":
-            raise ValueError(
-                "profile 'full' was folded into 'standard' (decision 17): "
-                "a standard collection now includes the workload aggregates. "
-                "Re-run with --profile standard (an existing 'full' database "
-                "must be re-collected)."
-            )
-        try:
-            return cls[name.upper()]
-        except KeyError:
-            raise ValueError(f"unknown profile {name!r}; use lite|standard") from None
-
-
-@dataclass(frozen=True)
-class Extractor:
-    name: str
-    category: str  # 'catalog' | 'sizing' | 'features' | 'workload'
-    min_profile: Profile
-    #: SQL resource under queries/account_usage/, or None if no ACCOUNT_USAGE source.
-    account_usage_sql: str | None
-    #: SQL resource under queries/information_schema/ run once per database
-    #: with {database} substituted, or None if no fallback exists.
-    info_schema_sql: str | None
-    #: raw-table columns usable for scope filtering, keyed by level.
-    #: e.g. {"database": "table_catalog", "schema": "table_schema"}
-    scope_columns: dict[str, str] = field(default_factory=dict)
-    required_privilege: str = "SNOWFLAKE.OBJECT_VIEWER or IMPORTED PRIVILEGES"
-    min_edition: str = "STANDARD"
-    sensitive_fields: dict[str, PrivacyClass] = field(default_factory=dict)
-    #: for time-windowed extracts: default lookback, substituted as {window_days}.
-    window_days: int | None = None
-    #: workload time-series extracts take their window from --history-days
-    #: instead of the fixed default above (spec §2; window_days then documents
-    #: the CLI default so the manifest tests keep their placeholder invariant).
-    window_from_history_days: bool = False
-    #: the ACCOUNT_USAGE view the extract reads, when it differs from the
-    #: extract name (M3c server-side aggregates: several extracts read
-    #: QUERY_HISTORY). None means the extract name is the view name.
-    account_usage_view: str | None = None
-    #: minutes the extract's observation deliberately stops short of "now"
-    #: (an ACCOUNT_USAGE latency watermark baked into the extract SQL);
-    #: reported through meta.extract_runs.actual_window_end so the latency
-    #: gap is disclosed coverage, never fabricated idle time.
-    window_end_lag_minutes: int = 0
-    #: SHOW-command source (e.g. "SHOW STREAMS IN ACCOUNT"). SHOW output is
-    #: account-wide and cannot be scope-filtered; columns are server-defined.
-    show_sql: str | None = None
-    #: for SHOW extracts: the explicit column allowlist the handoff builder
-    #: uses (SELECT extracts derive theirs from the SQL projection instead).
-    expected_show_columns: tuple[str, ...] = ()
-
-    @property
-    def target_table(self) -> str:
-        return self.name
+#: meta.extract_runs.source_used labels for this adapter's strategies.
+ACCOUNT_USAGE = "account_usage"
+INFORMATION_SCHEMA = "information_schema"
+SHOW = "show"
 
 
 def load_sql(kind: str, filename: str) -> str:
     """Load an extract SQL resource. kind is 'account_usage' or 'information_schema'."""
-    root = resources.files("md_migration_assessment.collect") / "queries" / kind / filename
-    return root.read_text(encoding="utf-8")
+    return load_sql_path(f"{kind}/{filename}")
+
+
+def load_sql_path(path: str) -> str:
+    """Adapter-relative resource loader (the neutral core calls this one)."""
+    root = resources.files("md_migration_assessment.sources.snowflake") / "queries"
+    return root.joinpath(*path.split("/")).read_text(encoding="utf-8")
 
 
 def extractor_version(ex: Extractor) -> str:
-    """Short content hash over the extractor's SQL text(s)."""
-    h = hashlib.sha256()
-    if ex.account_usage_sql:
-        h.update(load_sql("account_usage", ex.account_usage_sql).encode())
-    if ex.info_schema_sql:
-        h.update(load_sql("information_schema", ex.info_schema_sql).encode())
-    if ex.show_sql:
-        h.update(ex.show_sql.encode())
-        h.update(",".join(ex.expected_show_columns).encode())
-    return h.hexdigest()[:12]
+    return _neutral_version(ex, load_sql_path)
+
+
+def _ex(
+    name: str,
+    *,
+    category: str,
+    min_profile: Profile,
+    account_usage_sql: str | None = None,
+    info_schema_sql: str | None = None,
+    show_sql: str | None = None,
+    expected_show_columns: tuple[str, ...] = (),
+    account_usage_view: str | None = None,
+    required_privilege: str = "SNOWFLAKE.OBJECT_VIEWER or IMPORTED PRIVILEGES",
+    min_edition: str = "STANDARD",
+    **rest,
+) -> Extractor:
+    """Snowflake authoring shorthand -> neutral Extractor.
+
+    - ``show_sql``: exclusive SHOW-command source; ``expected_show_columns``
+      is its handoff allowlist (server-defined output has no projection).
+    - ``account_usage_sql``: deployment-wide query, standard profile only.
+      ``account_usage_view`` names the view read when it differs from the
+      extract name (M3c aggregates all read QUERY_HISTORY).
+    - ``info_schema_sql``: per-database walk, any profile.
+    """
+    sources: list = []
+    if show_sql:
+        if not expected_show_columns:
+            raise ValueError(f"{name}: SHOW extract needs expected_show_columns")
+        sources.append(Command(show_sql, tuple(expected_show_columns), SHOW))
+    if account_usage_sql:
+        sources.append(GlobalQuery(
+            f"account_usage/{account_usage_sql}", ACCOUNT_USAGE,
+            min_profile=Profile.STANDARD, source_view=account_usage_view,
+        ))
+    if info_schema_sql:
+        sources.append(PerDatabaseQuery(f"information_schema/{info_schema_sql}", INFORMATION_SCHEMA))
+    return Extractor(
+        name=name,
+        category=category,
+        min_profile=min_profile,
+        sources=tuple(sources),
+        required_privilege=required_privilege,
+        min_edition=min_edition,
+        **rest,
+    )
 
 
 _CATALOG_SCOPE = {"database": "table_catalog", "schema": "table_schema"}
 
 EXTRACTORS: list[Extractor] = [
-    Extractor(
+    _ex(
         name="databases",
         category="catalog",
         min_profile=Profile.LITE,
@@ -131,7 +156,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="schemata",
         category="catalog",
         min_profile=Profile.LITE,
@@ -145,7 +170,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="tables",
         category="catalog",
         min_profile=Profile.LITE,
@@ -160,7 +185,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="columns",
         category="catalog",
         min_profile=Profile.LITE,
@@ -176,7 +201,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="views",
         category="catalog",
         min_profile=Profile.LITE,
@@ -192,7 +217,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="functions",
         category="catalog",
         min_profile=Profile.LITE,
@@ -208,7 +233,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="procedures",
         category="catalog",
         min_profile=Profile.LITE,
@@ -224,7 +249,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="table_storage_metrics",
         category="sizing",
         min_profile=Profile.STANDARD,
@@ -238,7 +263,7 @@ EXTRACTORS: list[Extractor] = [
             "table_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="stage_storage_usage_history",
         category="sizing",
         min_profile=Profile.STANDARD,
@@ -247,7 +272,7 @@ EXTRACTORS: list[Extractor] = [
         required_privilege="SNOWFLAKE.USAGE_VIEWER or IMPORTED PRIVILEGES",
         window_days=365,
     ),
-    Extractor(
+    _ex(
         name="database_storage_usage_history",
         category="sizing",
         min_profile=Profile.STANDARD,
@@ -259,7 +284,7 @@ EXTRACTORS: list[Extractor] = [
         window_days=365,
     ),
     # ── governance / platform feature evidence (M2) ────────────────────
-    Extractor(
+    _ex(
         name="masking_policies",
         category="features",
         min_profile=Profile.STANDARD,
@@ -277,7 +302,7 @@ EXTRACTORS: list[Extractor] = [
             "policy_comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="row_access_policies",
         category="features",
         min_profile=Profile.STANDARD,
@@ -295,7 +320,7 @@ EXTRACTORS: list[Extractor] = [
             "policy_comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="policy_references",
         category="features",
         min_profile=Profile.STANDARD,
@@ -312,7 +337,7 @@ EXTRACTORS: list[Extractor] = [
             "ref_column_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="tags",
         category="features",
         min_profile=Profile.STANDARD,
@@ -329,7 +354,7 @@ EXTRACTORS: list[Extractor] = [
             "tag_comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="tag_references",
         category="features",
         min_profile=Profile.STANDARD,
@@ -347,7 +372,7 @@ EXTRACTORS: list[Extractor] = [
             "column_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="pipes",
         category="features",
         min_profile=Profile.STANDARD,
@@ -365,7 +390,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="tasks",
         category="features",
         min_profile=Profile.STANDARD,
@@ -384,7 +409,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="stages",
         category="features",
         min_profile=Profile.STANDARD,
@@ -401,7 +426,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="listings",
         category="features",
         min_profile=Profile.STANDARD,
@@ -417,7 +442,7 @@ EXTRACTORS: list[Extractor] = [
             "application_package": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="shares",
         category="features",
         min_profile=Profile.STANDARD,
@@ -437,7 +462,7 @@ EXTRACTORS: list[Extractor] = [
         },
     ),
     # ── M3a: completing the feature inventory ──────────────────────────
-    Extractor(
+    _ex(
         name="external_tables",
         category="features",
         min_profile=Profile.LITE,
@@ -454,7 +479,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="cortex_ai_functions_usage_history",
         category="features",
         min_profile=Profile.STANDARD,
@@ -464,7 +489,7 @@ EXTRACTORS: list[Extractor] = [
         window_days=90,
         sensitive_fields={"function_name": PrivacyClass.OBJECT_NAME},
     ),
-    Extractor(
+    _ex(
         name="search_optimization_history",
         category="features",
         min_profile=Profile.STANDARD,
@@ -480,7 +505,7 @@ EXTRACTORS: list[Extractor] = [
             "table_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="snowpipe_streaming_client_history",
         category="features",
         min_profile=Profile.STANDARD,
@@ -492,7 +517,7 @@ EXTRACTORS: list[Extractor] = [
     ),
     # SHOW-command extracts: account-wide, columns are server-defined; the
     # expected_show_columns allowlist is what survives into a handoff.
-    Extractor(
+    _ex(
         name="streams",
         category="features",
         min_profile=Profile.STANDARD,
@@ -516,7 +541,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="warehouses",
         category="features",
         min_profile=Profile.STANDARD,
@@ -537,7 +562,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="streamlit_apps",
         category="features",
         min_profile=Profile.STANDARD,
@@ -560,7 +585,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="notebooks",
         category="features",
         min_profile=Profile.STANDARD,
@@ -582,7 +607,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="applications",
         category="features",
         min_profile=Profile.STANDARD,
@@ -601,7 +626,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="application_packages",
         category="features",
         min_profile=Profile.STANDARD,
@@ -618,7 +643,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="catalog_integrations",
         category="features",
         min_profile=Profile.STANDARD,
@@ -634,7 +659,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="show_shares",
         category="features",
         min_profile=Profile.STANDARD,
@@ -656,7 +681,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="roles",
         category="features",
         min_profile=Profile.STANDARD,
@@ -675,7 +700,7 @@ EXTRACTORS: list[Extractor] = [
     # 15): these extracts are hour/day-grained aggregates whose size scales
     # with catalog and warehouse count, never with query volume. View↔role
     # mapping pinned against Snowflake docs 2026-08-19.
-    Extractor(
+    _ex(
         name="warehouse_metering_history",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -686,7 +711,7 @@ EXTRACTORS: list[Extractor] = [
         window_from_history_days=True,
         sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
     ),
-    Extractor(
+    _ex(
         name="warehouse_load_history",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -697,7 +722,7 @@ EXTRACTORS: list[Extractor] = [
         window_from_history_days=True,
         sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
     ),
-    Extractor(
+    _ex(
         name="metering_daily_history",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -707,7 +732,7 @@ EXTRACTORS: list[Extractor] = [
         window_days=30,
         window_from_history_days=True,
     ),
-    Extractor(
+    _ex(
         name="copy_history",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -723,7 +748,7 @@ EXTRACTORS: list[Extractor] = [
             "table_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="pipe_usage_history",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -750,7 +775,7 @@ EXTRACTORS: list[Extractor] = [
             "pipe_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="task_history",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -766,7 +791,7 @@ EXTRACTORS: list[Extractor] = [
             "task_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="login_history",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -785,7 +810,7 @@ EXTRACTORS: list[Extractor] = [
     # collected columns carry no database-resident object names).
     # View↔role mapping pinned against Snowflake docs 2026-08-19:
     # QUERY_HISTORY needs GOVERNANCE_VIEWER, SESSIONS needs SECURITY_VIEWER.
-    Extractor(
+    _ex(
         name="query_concurrency",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -801,7 +826,7 @@ EXTRACTORS: list[Extractor] = [
         window_end_lag_minutes=45,
         sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
     ),
-    Extractor(
+    _ex(
         name="query_tag_fingerprints",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -816,7 +841,7 @@ EXTRACTORS: list[Extractor] = [
     # split from query_tag_fingerprints so a customer withholding
     # SECURITY_VIEWER (needed for the SESSIONS join) still gets tag-based
     # tool attribution
-    Extractor(
+    _ex(
         name="client_app_fingerprints",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -831,7 +856,7 @@ EXTRACTORS: list[Extractor] = [
         account_usage_view="query_history",
         sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
     ),
-    Extractor(
+    _ex(
         name="query_shapes",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -843,7 +868,7 @@ EXTRACTORS: list[Extractor] = [
         account_usage_view="query_history",
         sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
     ),
-    Extractor(
+    _ex(
         name="query_workload_rollup",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -855,7 +880,7 @@ EXTRACTORS: list[Extractor] = [
         account_usage_view="query_history",
         sensitive_fields={"warehouse_name": PrivacyClass.OBJECT_NAME},
     ),
-    Extractor(
+    _ex(
         name="query_dialect_constructs",
         category="workload",
         min_profile=Profile.STANDARD,
@@ -868,7 +893,7 @@ EXTRACTORS: list[Extractor] = [
     ),
     # ── M3d: inventory expansion (Corrdyn review, decision 18) ──────────
     # View↔role mapping pinned against Snowflake docs 2026-08-20.
-    Extractor(
+    _ex(
         name="object_dependencies",
         category="features",
         min_profile=Profile.STANDARD,
@@ -887,7 +912,7 @@ EXTRACTORS: list[Extractor] = [
             "referenced_object_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="table_read_heat",
         category="features",
         min_profile=Profile.STANDARD,
@@ -908,7 +933,7 @@ EXTRACTORS: list[Extractor] = [
             "object_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="table_constraints",
         category="features",
         min_profile=Profile.LITE,
@@ -923,7 +948,7 @@ EXTRACTORS: list[Extractor] = [
             "constraint_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="referential_constraints",
         category="features",
         min_profile=Profile.LITE,
@@ -940,7 +965,7 @@ EXTRACTORS: list[Extractor] = [
             "unique_constraint_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="sequences",
         category="features",
         min_profile=Profile.LITE,
@@ -955,7 +980,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="grants_to_roles_summary",
         category="features",
         min_profile=Profile.STANDARD,
@@ -965,7 +990,7 @@ EXTRACTORS: list[Extractor] = [
         account_usage_view="grants_to_roles",
         sensitive_fields={"role_name": PrivacyClass.USER_IDENTITY},
     ),
-    Extractor(
+    _ex(
         name="account_parameters",
         category="features",
         min_profile=Profile.STANDARD,
@@ -976,7 +1001,7 @@ EXTRACTORS: list[Extractor] = [
         required_privilege="any role",
         sensitive_fields={"value": PrivacyClass.COMMENT},
     ),
-    Extractor(
+    _ex(
         name="network_policies",
         category="features",
         min_profile=Profile.STANDARD,
@@ -995,7 +1020,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="storage_integrations",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1009,7 +1034,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="notification_integrations",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1023,7 +1048,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="api_integrations",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1037,7 +1062,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="external_access_integrations",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1051,7 +1076,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="file_formats",
         category="features",
         min_profile=Profile.LITE,
@@ -1066,7 +1091,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="external_volumes",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1080,7 +1105,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="dynamic_tables",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1104,7 +1129,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="dynamic_table_refresh_history",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1120,7 +1145,7 @@ EXTRACTORS: list[Extractor] = [
             "table_name": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="alerts",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1144,7 +1169,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="event_tables",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1164,7 +1189,7 @@ EXTRACTORS: list[Extractor] = [
             "comment": PrivacyClass.COMMENT,
         },
     ),
-    Extractor(
+    _ex(
         name="replication_groups",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1184,7 +1209,7 @@ EXTRACTORS: list[Extractor] = [
             "allowed_shares": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="failover_groups",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1205,7 +1230,7 @@ EXTRACTORS: list[Extractor] = [
             "allowed_shares": PrivacyClass.OBJECT_NAME,
         },
     ),
-    Extractor(
+    _ex(
         name="resource_monitors",
         category="features",
         min_profile=Profile.STANDARD,
@@ -1228,4 +1253,36 @@ EXTRACTORS: list[Extractor] = [
 
 
 def extractors_for(profile: Profile) -> list[Extractor]:
-    return [e for e in EXTRACTORS if e.min_profile <= profile]
+    return _neutral_extractors_for(EXTRACTORS, profile)
+
+
+# ── Snowflake-vocabulary accessors over the neutral model ────────────────
+# (README generation and the Snowflake test-suite read extractors in the
+# adapter's own terms; the runner never uses these.)
+
+
+def account_usage_sql(ex: Extractor) -> str | None:
+    """ACCOUNT_USAGE extract filename (under queries/account_usage/), or None."""
+    q = ex.global_query
+    return q.sql.split("/", 1)[1] if q else None
+
+
+def info_schema_sql(ex: Extractor) -> str | None:
+    """INFORMATION_SCHEMA extract filename (under queries/information_schema/), or None."""
+    q = ex.per_database_query
+    return q.sql.split("/", 1)[1] if q else None
+
+
+def show_sql(ex: Extractor) -> str | None:
+    c = ex.command
+    return c.command if c else None
+
+
+def expected_show_columns(ex: Extractor) -> tuple[str, ...]:
+    c = ex.command
+    return c.expected_columns if c else ()
+
+
+def account_usage_view(ex: Extractor) -> str | None:
+    q = ex.global_query
+    return q.source_view if q else None

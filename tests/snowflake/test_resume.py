@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import FakeSource
+from fake_snowflake import FakeSource
 from fixtures import REALISTIC, REALISTIC_SHOW, WORKLOAD
 
-from md_migration_assessment.collect.manifest import EXTRACTORS, Profile
+from md_migration_assessment.sources.snowflake.manifest import EXTRACTORS, Profile
 from md_migration_assessment.collect.runner import run_collection
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 
 def full_au(**overrides) -> dict:
@@ -45,7 +46,7 @@ def interrupted_collection(out_db):
     """Run a full-profile collection that gets Ctrl+C'd at raw 'tables'."""
     source = make_source(tables=KeyboardInterrupt())
     with pytest.raises(KeyboardInterrupt):
-        run_collection(out_db, source, profile=Profile.STANDARD)
+        run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     coll_id = out_db.execute("SELECT collection_id FROM meta.collections").fetchone()[0]
 
     class C:  # minimal handle for statuses()
@@ -59,8 +60,7 @@ def interrupted_collection(out_db):
 
 def test_progress_reports_every_extractor(out_db):
     lines: list[str] = []
-    run_collection(
-        out_db, make_source(), profile=Profile.STANDARD, progress=lines.append
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD, progress=lines.append
     )
     running = [l for l in lines if l.endswith(": running")]
     done = [l for l in lines if ": complete (" in l]
@@ -124,8 +124,7 @@ def test_interrupted_collection_still_builds_a_report(out_db):
 def test_resume_completes_only_what_is_missing(out_db):
     interrupted_collection(out_db)
     source = make_source()  # no bomb this time
-    coll = run_collection(
-        out_db, source, profile=Profile.LITE, resume=True  # LITE must be ignored
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.LITE, resume=True  # LITE must be ignored
     )
     st = statuses(out_db, coll)
     # the stored STANDARD profile won over the passed LITE: workload
@@ -145,8 +144,7 @@ def test_resume_completes_only_what_is_missing(out_db):
 def test_resume_reports_skips_in_progress(out_db):
     interrupted_collection(out_db)
     lines: list[str] = []
-    run_collection(
-        out_db, make_source(), profile=Profile.STANDARD, resume=True,
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD, resume=True,
         progress=lines.append,
     )
     assert any("resuming collection" in l for l in lines)
@@ -166,8 +164,7 @@ def test_interrupt_outside_extractor_still_records_all_rows(out_db):
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        run_collection(
-            out_db, make_source(), profile=Profile.STANDARD,
+        run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD,
             progress=exploding_progress,
         )
     rows = dict(out_db.execute(
@@ -183,7 +180,7 @@ def test_failed_retry_leaves_no_stale_raw_evidence(out_db):
     """Review, 2026-08-19: a resume retry that fails before ingesting must
     not leave the previous attempt's raw rows behind a 'failed' status —
     the report would materialize stale evidence."""
-    run_collection(out_db, make_source(), profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD)
     assert out_db.execute("SELECT count(*) FROM raw.tables").fetchone()[0] > 0
     # simulate a prior run whose 'tables' extract needs a retry
     out_db.execute(
@@ -192,7 +189,7 @@ def test_failed_retry_leaves_no_stale_raw_evidence(out_db):
     # the retry fails outright (generic error -> no INFORMATION_SCHEMA save)
     source = make_source(tables=RuntimeError("boom"))
     source.info_schema = {"tables": {"APPDB": RuntimeError("boom")}}
-    run_collection(out_db, source, profile=Profile.STANDARD, resume=True)
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, resume=True)
     status = out_db.execute(
         "SELECT status FROM meta.extract_runs WHERE extractor = 'tables'"
     ).fetchone()[0]
@@ -215,14 +212,14 @@ def test_stale_raw_without_coverage_row_is_still_dropped(out_db):
     recording leaves raw data with NO coverage row. Resume treats the
     extractor as missing — the raw target must be dropped anyway, so a
     retry that fails cannot resurrect the stale evidence."""
-    run_collection(out_db, make_source(), profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD)
     assert out_db.execute("SELECT count(*) FROM raw.tables").fetchone()[0] > 0
     # simulate the kill window: raw rows exist, coverage row does not
     out_db.execute("DELETE FROM meta.extract_runs WHERE extractor = 'tables'")
     out_db.execute("UPDATE meta.collections SET finished_at = NULL")
     source = make_source(tables=RuntimeError("boom"))
     source.info_schema = {"tables": {"APPDB": RuntimeError("boom")}}
-    run_collection(out_db, source, profile=Profile.STANDARD, resume=True)
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, resume=True)
     assert out_db.execute(
         "SELECT status FROM meta.extract_runs WHERE extractor = 'tables'"
     ).fetchone()[0] == "failed"
@@ -250,13 +247,13 @@ def test_interrupt_after_finish_commit_clears_finished_at(out_db, monkeypatch):
 
     monkeypatch.setattr(db_module, "finish_collection", finish_then_interrupt)
     with pytest.raises(KeyboardInterrupt):
-        run_collection(out_db, make_source(), profile=Profile.STANDARD)
+        run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD)
     assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0] is None
     # all coverage rows are present, so a resume just re-stamps it
     st = statuses_all(out_db)
     assert set(st) == {e.name for e in EXTRACTORS}
     monkeypatch.setattr(db_module, "finish_collection", real_finish)
-    run_collection(out_db, make_source(), profile=Profile.STANDARD, resume=True)
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD, resume=True)
     assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
 
 
@@ -270,14 +267,13 @@ def test_resume_reopens_a_finished_collection(out_db):
     """Review, 2026-08-19: a finished collection with failed extractors is
     resumable; an interrupted retry must not leave finished_at set while
     extractors say interrupted."""
-    run_collection(out_db, make_source(), profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD)
     assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
     out_db.execute(
         "UPDATE meta.extract_runs SET status = 'unavailable' WHERE extractor = 'tables'"
     )
     with pytest.raises(KeyboardInterrupt):
-        run_collection(
-            out_db, make_source(tables=KeyboardInterrupt()),
+        run_collection(out_db, SNOWFLAKE, make_source(tables=KeyboardInterrupt()),
             profile=Profile.STANDARD, resume=True,
         )
     finished = out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
@@ -287,7 +283,7 @@ def test_resume_reopens_a_finished_collection(out_db):
     ).fetchone()[0]
     assert status == "interrupted"
     # and a second resume completes and re-stamps finished_at
-    run_collection(out_db, make_source(), profile=Profile.STANDARD, resume=True)
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD, resume=True)
     assert out_db.execute("SELECT finished_at FROM meta.collections").fetchone()[0]
 
 
@@ -296,15 +292,15 @@ def test_resume_refuses_a_different_account(out_db):
     other = make_source()
     other.account = "OTHERACCT"
     with pytest.raises(ValueError, match="OTHERACCT"):
-        run_collection(out_db, other, profile=Profile.STANDARD, resume=True)
+        run_collection(out_db, SNOWFLAKE, other, profile=Profile.STANDARD, resume=True)
 
 
 def test_resume_requires_an_existing_collection(out_db):
     with pytest.raises(ValueError, match="nothing to resume"):
-        run_collection(out_db, make_source(), profile=Profile.STANDARD, resume=True)
+        run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.STANDARD, resume=True)
 
 
 def test_fresh_collect_on_used_database_mentions_resume(out_db):
-    run_collection(out_db, make_source(), profile=Profile.LITE)
+    run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.LITE)
     with pytest.raises(ValueError, match="--resume"):
-        run_collection(out_db, make_source(), profile=Profile.LITE)
+        run_collection(out_db, SNOWFLAKE, make_source(), profile=Profile.LITE)

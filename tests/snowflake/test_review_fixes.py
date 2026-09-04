@@ -7,15 +7,16 @@ import stat
 
 import pytest
 
-from conftest import NOT_AUTHORIZED, FakeSource
+from fake_snowflake import NOT_AUTHORIZED, FakeSource
 
 from fixtures import REALISTIC
 
-from md_migration_assessment.collect.manifest import Profile
+from md_migration_assessment.sources.snowflake.manifest import Profile
 from md_migration_assessment.collect.runner import Scope, run_collection
 from md_migration_assessment.db import open_output
 from md_migration_assessment.report import build_report
-from md_migration_assessment.report.signals import PLANNED_SIGNALS
+from md_migration_assessment.sources.snowflake.signals import PLANNED_SIGNALS
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 
 def _mode(path) -> int:
@@ -42,9 +43,9 @@ def test_second_collection_in_same_file_is_rejected(out_db):
     """P1: CREATE OR REPLACE ingestion would silently destroy the first
     collection's raw evidence while meta.collections still listed both."""
     source = FakeSource(account_usage=dict(REALISTIC), databases=["APPDB"])
-    run_collection(out_db, source, profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     with pytest.raises(ValueError, match="already contains a collection"):
-        run_collection(out_db, source, profile=Profile.STANDARD)
+        run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
 
 
 def test_scoped_database_not_visible_degrades_to_partial(out_db):
@@ -52,7 +53,7 @@ def test_scoped_database_not_visible_degrades_to_partial(out_db):
     evidence — never silently dropped from scope."""
     source = FakeSource(databases=["VISIBLE"])
     scope = Scope.parse(["VISIBLE", "HIDDEN"])
-    coll = run_collection(out_db, source, profile=Profile.LITE, scope=scope)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.LITE, scope=scope)
     row = out_db.execute(
         "SELECT status, actual_scope, error_detail FROM meta.extract_runs "
         "WHERE collection_id = ? AND extractor = 'tables'",
@@ -66,7 +67,7 @@ def test_scoped_database_not_visible_degrades_to_partial(out_db):
 def test_scope_entirely_invisible_is_unavailable(out_db):
     source = FakeSource(databases=["VISIBLE"])
     scope = Scope.parse(["HIDDEN"])
-    coll = run_collection(out_db, source, profile=Profile.LITE, scope=scope)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.LITE, scope=scope)
     status = out_db.execute(
         "SELECT status FROM meta.extract_runs "
         "WHERE collection_id = ? AND extractor = 'tables'",
@@ -79,7 +80,7 @@ def test_quoted_database_names_are_walked_not_rejected(out_db):
     """P2: Snowflake permits identifiers with spaces/punctuation; discovered
     names must be quoted, not failed against the scope regex."""
     source = FakeSource(databases=["My DB", "USER$WEIRD.NAME"])
-    coll = run_collection(out_db, source, profile=Profile.LITE)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.LITE)
     row = out_db.execute(
         "SELECT status, actual_scope FROM meta.extract_runs "
         "WHERE collection_id = ? AND extractor = 'tables'",
@@ -96,7 +97,7 @@ def test_planned_signals_are_visible_unknowns(out_db):
     be silently absent from the inventory. (Empty as of M3a — the mechanism
     stays, and this test keeps it honest for future additions.)"""
     source = FakeSource(account_usage=dict(REALISTIC), databases=["APPDB"])
-    run_collection(out_db, source, profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     build_report(out_db)
     rows = dict(
         out_db.execute(
@@ -112,7 +113,7 @@ def test_sizing_carries_coverage_status(out_db):
         account_usage=dict(REALISTIC, table_storage_metrics=Exception(NOT_AUTHORIZED)),
         databases=["APPDB"],
     )
-    run_collection(out_db, source, profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     build_report(out_db)
     row = out_db.execute(
         "SELECT tables_extract_status, storage_extract_status, active_bytes "
@@ -131,7 +132,7 @@ def test_sizing_relation_exists_even_without_table_evidence(out_db):
         info_schema={"tables": {"APPDB": Exception(NOT_AUTHORIZED)}},
         databases=["APPDB"],
     )
-    run_collection(out_db, source, profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD)
     # raw.tables was never created
     assert not out_db.execute(
         "SELECT count(*) FROM information_schema.tables "
@@ -157,8 +158,7 @@ def test_show_output_is_scope_filtered_client_side(out_db):
         databases=["APPDB", "SECRETDB"],
         show_data={"streams": streams},
     )
-    coll = run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
     )
     names = {
         r[0] for r in out_db.execute("SELECT name FROM raw.streams").fetchall()
@@ -176,8 +176,7 @@ def test_show_output_is_scope_filtered_client_side(out_db):
 
 def test_account_level_show_extracts_note_scope_inapplicability(out_db):
     source = FakeSource(account_usage=dict(REALISTIC), databases=["APPDB"])
-    coll = run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
     )
     row = out_db.execute(
         "SELECT status, error_detail FROM meta.extract_runs "
@@ -208,8 +207,7 @@ def test_show_scope_filter_handles_empty_results(out_db):
         databases=["APPDB", "SECRETDB"],
         show_data={"streamlit_apps": empty, "notebooks": all_filtered},
     )
-    coll = run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
     )
     statuses = dict(
         out_db.execute(
@@ -237,8 +235,7 @@ def test_show_output_honors_schema_level_scope(out_db):
         databases=["APPDB"],
         show_data={"streams": streams},
     )
-    run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
     )
     names = {r[0] for r in out_db.execute("SELECT name FROM raw.streams").fetchall()}
     # schema-scoped: only the exact pair plus account-level NULL-db rows; a
@@ -255,8 +252,7 @@ def test_show_scope_filter_fails_closed_on_missing_schema_column(out_db):
         databases=["APPDB"],
         show_data={"streams": no_schema},
     )
-    coll = run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
     )
     row = out_db.execute(
         "SELECT status, error_detail FROM meta.extract_runs "
@@ -283,8 +279,7 @@ def test_database_only_show_extracts_keep_whole_database_under_schema_scope(out_
         databases=["APPDB", "SECRETDB"],
         show_data={"show_shares": shares},
     )
-    coll = run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
     )
     names = {r[0] for r in out_db.execute("SELECT name FROM raw.show_shares").fetchall()}
     assert names == {"APPDB_SHARE", "NO_DB_YET"}
@@ -303,8 +298,7 @@ def test_scoped_show_extracts_record_actual_scope(out_db):
         databases=["APPDB"],
         show_data=dict(__import__("fixtures").REALISTIC_SHOW),
     )
-    coll = run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB.S1"])
     )
     row = out_db.execute(
         "SELECT actual_scope FROM meta.extract_runs "

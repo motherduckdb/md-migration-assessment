@@ -512,25 +512,30 @@ source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
     { name = "pyarrow" },
-    { name = "snowflake-connector-python", version = "4.6.0", source = { registry = "https://pypi.org/simple" }, extra = ["pandas"], marker = "python_full_version >= '3.14'" },
-    { name = "snowflake-connector-python", version = "4.7.2", source = { registry = "https://pypi.org/simple" }, extra = ["pandas"], marker = "python_full_version < '3.14'" },
     { name = "typer" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "snowflake-connector-python", version = "4.6.0", source = { registry = "https://pypi.org/simple" }, extra = ["pandas"], marker = "python_full_version >= '3.14'" },
+    { name = "snowflake-connector-python", version = "4.7.2", source = { registry = "https://pypi.org/simple" }, extra = ["pandas"], marker = "python_full_version < '3.14'" },
+]
+snowflake = [
+    { name = "snowflake-connector-python", version = "4.6.0", source = { registry = "https://pypi.org/simple" }, extra = ["pandas"], marker = "python_full_version >= '3.14'" },
+    { name = "snowflake-connector-python", version = "4.7.2", source = { registry = "https://pypi.org/simple" }, extra = ["pandas"], marker = "python_full_version < '3.14'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = ">=1.3" },
+    { name = "md-migration-assessment", extras = ["snowflake"], marker = "extra == 'dev'" },
     { name = "pyarrow", specifier = ">=16" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "snowflake-connector-python", extras = ["pandas"], specifier = ">=3.12" },
+    { name = "snowflake-connector-python", extras = ["pandas"], marker = "extra == 'snowflake'", specifier = ">=3.12" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["snowflake", "dev"]
 
 [[package]]
 name = "mdurl"

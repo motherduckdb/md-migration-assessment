@@ -10,7 +10,7 @@ import pathlib
 
 import pytest
 
-_SEED = pathlib.Path(__file__).parent / "integration" / "seed.py"
+_SEED = pathlib.Path(__file__).parent.parent / "integration" / "seed.py"
 spec = importlib.util.spec_from_file_location("seed_module", _SEED)
 seed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seed)

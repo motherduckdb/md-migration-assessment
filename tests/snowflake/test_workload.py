@@ -7,16 +7,20 @@ per-login events, and query-history-derived facts stay not_requested.
 
 from __future__ import annotations
 
-from conftest import FakeSource
+from fake_snowflake import FakeSource
 from fixtures import REALISTIC, REALISTIC_SHOW, WORKLOAD
 
-from md_migration_assessment.collect.manifest import (
+from md_migration_assessment.sources.snowflake.manifest import (
     EXTRACTORS,
     Profile,
     load_sql,
 )
 from md_migration_assessment.collect.runner import run_collection
 from md_migration_assessment.report import build_report
+from md_migration_assessment.sources.snowflake.manifest import (
+    account_usage_sql,
+)
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 WORKLOAD_EXTRACTORS = [e for e in EXTRACTORS if e.category == "workload"]
 WORKLOAD_NAMES = {e.name for e in WORKLOAD_EXTRACTORS}
@@ -50,8 +54,7 @@ def full_source() -> FakeSource:
 
 def collect(out_db, profile=Profile.STANDARD, history_days=30, source=None):
     source = source or full_source()
-    coll = run_collection(
-        out_db, source, profile=profile, history_days=history_days
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=profile, history_days=history_days
     )
     build_report(out_db)
     return coll, source
@@ -85,9 +88,9 @@ def test_query_history_is_read_only_via_server_side_aggregation():
     }
     assert "query_history" not in {e.name for e in EXTRACTORS}
     for ex in EXTRACTORS:
-        if not ex.account_usage_sql:
+        if not account_usage_sql(ex):
             continue
-        sql = load_sql("account_usage", ex.account_usage_sql)
+        sql = load_sql("account_usage", account_usage_sql(ex))
         low = sql.lower()
         assert "query_attribution_history" not in low, ex.name
         if "account_usage.query_history" in low:
@@ -176,8 +179,7 @@ def test_pipe_usage_scope_filters_server_side(out_db):
     from md_migration_assessment.collect.runner import Scope
 
     source = full_source()
-    run_collection(
-        out_db, source, profile=Profile.STANDARD,
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD,
         scope=Scope.parse(["APPDB", "OTHERDB.S2"]),
     )
     rendered = [q for q in source.queries if "pipe_usage_history" in q]
@@ -309,13 +311,13 @@ def test_failed_copy_attempts_are_evidence_not_writes(out_db):
 def test_ingestion_inventory_has_no_stale_labels():
     """Stale-candidate labeling needs all write methods observed (M3c);
     copy evidence alone must not imply a table is unwritten."""
-    from md_migration_assessment.report import _INGESTION_DDL
+    from md_migration_assessment.sources.snowflake.facts import _INGESTION_DDL
 
     assert "stale" not in _INGESTION_DDL.lower()
 
 
 def test_workload_profile_without_metering_marks_credits_unknown(out_db):
-    from conftest import NOT_AUTHORIZED
+    from fake_snowflake import NOT_AUTHORIZED
 
     au = dict(REALISTIC)
     au.update(WORKLOAD)

@@ -26,11 +26,13 @@ import re
 
 import duckdb
 
-from . import RAW_SCHEMA_VERSION
-from .collect.manifest import EXTRACTORS, Extractor, load_sql
+from . import db
+from .collect.extractor import Command, Extractor
 from .collect.runner import FRAMEWORK_COLUMNS
 from .db import require_local_path
 from .privacy import HANDOFF_EXCLUDED_CLASSES
+from .sources import get_adapter
+from .sources.base import SourceAdapter
 
 _BARE_COLUMN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*$")
 _ALIASED_RE = re.compile(r".+\s+AS\s+([A-Za-z_][A-Za-z0-9_$]*)$", re.IGNORECASE | re.DOTALL)
@@ -114,22 +116,20 @@ def _projection_columns(sql: str) -> set[str]:
     return cols
 
 
-def _expected_columns(ex: Extractor) -> set[str]:
+def _expected_columns(adapter: SourceAdapter, ex: Extractor) -> set[str]:
     """Output columns the extractor's version-controlled definition can produce.
 
-    SELECT extracts derive theirs from the SQL projection; SHOW extracts have
-    server-defined output, so their manifest declares an explicit allowlist —
-    any server-added column is drift until deliberately admitted.
+    Query strategies derive theirs from the SQL projection; command
+    strategies have server-defined output, so the manifest declares an
+    explicit allowlist — any server-added column is drift until
+    deliberately admitted.
     """
     cols: set[str] = set()
-    for kind, fname in (
-        ("account_usage", ex.account_usage_sql),
-        ("information_schema", ex.info_schema_sql),
-    ):
-        if fname:
-            cols |= _projection_columns(load_sql(kind, fname))
-    if ex.show_sql:
-        cols |= {c.lower() for c in ex.expected_show_columns}
+    for strategy in ex.sources:
+        if isinstance(strategy, Command):
+            cols |= {c.lower() for c in strategy.expected_columns}
+        else:
+            cols |= _projection_columns(adapter.load_sql(strategy.sql))
     return cols
 
 
@@ -176,16 +176,23 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
         con.execute("USE handoff_src")  # information_schema lookups read the source
 
         # The expected-column allowlist comes from the *installed* extract
-        # SQL; on version skew it would silently misclassify legitimately
-        # collected columns as drift. Refuse loudly, like build_report.
-        for cid, raw_version in con.execute(
-            "SELECT collection_id, raw_schema_version FROM meta.collections"
-        ).fetchall():
-            if raw_version != RAW_SCHEMA_VERSION:
+        # SQL of the adapter that produced the collection; on version skew
+        # it would silently misclassify legitimately collected columns as
+        # drift. Refuse loudly, like build_report.
+        collections = db.collection_kinds(con)
+        kinds = {kind for _, kind, _ in collections}
+        if len(kinds) != 1:
+            raise ValueError(
+                f"handoff needs exactly one source kind in the file, found "
+                f"{sorted(kinds)}"
+            )
+        adapter = get_adapter(next(iter(kinds)))
+        for cid, _, raw_version in collections:
+            if raw_version != adapter.raw_schema_version:
                 raise ValueError(
                     f"collection {cid} has raw schema v{raw_version}; this tool "
-                    f"builds handoffs for v{RAW_SCHEMA_VERSION}. Re-collect with "
-                    "the current version."
+                    f"builds {adapter.name} handoffs for v{adapter.raw_schema_version}. "
+                    "Re-collect with the current version."
                 )
 
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".meta')
@@ -207,7 +214,7 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
                     "rows": rows, "excluded_columns": [], "sensitive_included": {},
                 }
 
-        by_target = {ex.target_table: ex for ex in EXTRACTORS}
+        by_target = {ex.target_table: ex for ex in adapter.extractors}
         for table in _tables(con, "raw"):
             ex = by_target.get(table)
             if ex is None:
@@ -217,7 +224,7 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
                 continue
             actual = _columns(con, "raw", table)
             actual_lower = {c.lower() for c in actual}
-            expected = _expected_columns(ex)
+            expected = _expected_columns(adapter, ex)
 
             # Disjoint partitions of the actual columns:
             #   dropped_unexpected — not produced by the shipped extract SQL

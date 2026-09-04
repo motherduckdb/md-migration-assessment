@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 import duckdb
 
-from . import META_SCHEMA_VERSION, RAW_SCHEMA_VERSION, __version__
+from . import META_SCHEMA_VERSION, __version__
 
 # Anything scheme-like: md:, MD:, motherduck:, s3://, duckdb://, http:, ...
 # DuckDB resolves several of these to remote systems (verified live:
@@ -73,10 +73,11 @@ CREATE TABLE IF NOT EXISTS meta.collections (
     query_text_mode      VARCHAR NOT NULL,   -- always 'never_collected' (decision 16:
                                              -- workload query text is never fetched)
     history_days         INTEGER NOT NULL,
-    snowflake_account    VARCHAR,
-    snowflake_version    VARCHAR,
-    snowflake_region     VARCHAR,
-    snowflake_edition    VARCHAR,            -- nullable: not directly exposed by Snowflake
+    source_kind          VARCHAR NOT NULL,   -- adapter name, e.g. 'snowflake'
+    source_deployment    VARCHAR,            -- account / project / host as the adapter reports it
+    source_version       VARCHAR,
+    source_region        VARCHAR,
+    source_edition       VARCHAR,            -- nullable: not every source exposes a tier
     started_at           TIMESTAMPTZ NOT NULL,
     finished_at          TIMESTAMPTZ
 );
@@ -87,7 +88,7 @@ CREATE TABLE IF NOT EXISTS meta.extract_runs (
     extractor_version    VARCHAR NOT NULL,   -- content hash of the extract SQL
     target_table         VARCHAR NOT NULL,
     status               VARCHAR NOT NULL,   -- complete|partial|unavailable|failed|not_requested
-    source_used          VARCHAR,            -- 'account_usage' | 'information_schema' | null
+    source_used          VARCHAR,            -- adapter-defined strategy label, e.g. 'account_usage'
     requested_scope      JSON,
     actual_scope         JSON,               -- e.g. databases actually covered by a fallback walk
     requested_window_days INTEGER,
@@ -139,17 +140,25 @@ def open_output(path: str) -> duckdb.DuckDBPyConnection:
 
 @dataclass
 class Collection:
-    """Identity of one collection run, mirrored in meta.collections."""
+    """Identity of one collection run, mirrored in meta.collections.
+
+    ``source_kind`` names the adapter that produced the collection; report
+    and handoff resolve the same adapter from it when reading the file.
+    ``raw_schema_version`` is the adapter's raw.* shape version at
+    collection time.
+    """
 
     profile: str
+    source_kind: str
+    raw_schema_version: int
     mode: str = "local"
     scope: list[str] | None = None
     query_text_mode: str = "never_collected"
     history_days: int = 30
-    snowflake_account: str | None = None
-    snowflake_version: str | None = None
-    snowflake_region: str | None = None
-    snowflake_edition: str | None = None
+    source_deployment: str | None = None
+    source_version: str | None = None
+    source_region: str | None = None
+    source_edition: str | None = None
     collection_id: uuid.UUID = field(default_factory=uuid.uuid4)
     started_at: datetime = field(default_factory=utcnow)
 
@@ -160,24 +169,25 @@ def begin_collection(con: duckdb.DuckDBPyConnection, coll: Collection) -> None:
         INSERT INTO meta.collections (
             collection_id, tool_version, raw_schema_version, meta_schema_version,
             profile, scope, mode, query_text_mode, history_days,
-            snowflake_account, snowflake_version, snowflake_region, snowflake_edition,
-            started_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_kind, source_deployment, source_version, source_region,
+            source_edition, started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             str(coll.collection_id),
             __version__,
-            RAW_SCHEMA_VERSION,
+            coll.raw_schema_version,
             META_SCHEMA_VERSION,
             coll.profile,
             json.dumps(coll.scope) if coll.scope is not None else None,
             coll.mode,
             coll.query_text_mode,
             coll.history_days,
-            coll.snowflake_account,
-            coll.snowflake_version,
-            coll.snowflake_region,
-            coll.snowflake_edition,
+            coll.source_kind,
+            coll.source_deployment,
+            coll.source_version,
+            coll.source_region,
+            coll.source_edition,
             coll.started_at,
         ],
     )
@@ -201,19 +211,18 @@ def reopen_collection(con: duckdb.DuckDBPyConnection, coll: Collection) -> None:
     )
 
 
-def load_collection(con: duckdb.DuckDBPyConnection) -> tuple[Collection, int]:
+def load_collection(con: duckdb.DuckDBPyConnection) -> Collection:
     """Load the database's single collection for --resume.
 
-    Returns (collection, stored raw_schema_version). The stored parameters
-    are authoritative on resume — profile, scope, and history window come
-    from here, never from fresh CLI flags.
+    The stored parameters are authoritative on resume — profile, scope,
+    history window, and source kind come from here, never from fresh CLI
+    flags.
     """
     rows = con.execute(
         """
         SELECT collection_id, profile, mode, scope, query_text_mode,
-               history_days, snowflake_account, snowflake_version,
-               snowflake_region, snowflake_edition, started_at,
-               raw_schema_version
+               history_days, source_kind, source_deployment, source_version,
+               source_region, source_edition, started_at, raw_schema_version
         FROM meta.collections
         """
     ).fetchall()
@@ -223,22 +232,35 @@ def load_collection(con: duckdb.DuckDBPyConnection) -> tuple[Collection, int]:
         raise ValueError(
             "cannot resume: multiple collections in one file (unsupported)"
         )
-    (cid, profile, mode, scope, qtm, days, acct, ver, region, edition,
-     started, raw_version) = rows[0]
-    coll = Collection(
+    (cid, profile, mode, scope, qtm, days, kind, deployment, ver, region,
+     edition, started, raw_version) = rows[0]
+    return Collection(
         profile=profile,
+        source_kind=kind,
+        raw_schema_version=raw_version,
         mode=mode,
         scope=json.loads(scope) if scope is not None else None,
         query_text_mode=qtm,
         history_days=days,
-        snowflake_account=acct,
-        snowflake_version=ver,
-        snowflake_region=region,
-        snowflake_edition=edition,
+        source_deployment=deployment,
+        source_version=ver,
+        source_region=region,
+        source_edition=edition,
         collection_id=uuid.UUID(str(cid)),
         started_at=started,
     )
-    return coll, raw_version
+
+
+def collection_kinds(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str, int]]:
+    """``(collection_id, source_kind, raw_schema_version)`` for every
+    collection in the file — what report and handoff need to resolve the
+    adapter and refuse version skew."""
+    return [
+        (str(cid), kind, raw_version)
+        for cid, kind, raw_version in con.execute(
+            "SELECT collection_id, source_kind, raw_schema_version FROM meta.collections"
+        ).fetchall()
+    ]
 
 
 def delete_extract_run(

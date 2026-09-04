@@ -2,7 +2,8 @@
 
 The collector's only network peer in local mode. Reads are streamed as Arrow
 record batches (bounded memory, no pandas materialization) and handed to
-DuckDB for ingestion.
+DuckDB for ingestion. :class:`SnowflakeSource` implements the neutral
+:class:`~md_migration_assessment.sources.base.Connection` protocol.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from itertools import chain
 from typing import Iterable, Iterator
 
 import pyarrow as pa
+
+from ..base import SessionInfo
 
 
 def as_record_batches(
@@ -107,23 +110,21 @@ class SnowflakeConfig:
         return kwargs
 
 
-@dataclass
-class SessionInfo:
-    account: str | None
-    version: str | None
-    region: str | None
-    edition: str | None = None  # not directly exposed by Snowflake
-
-
 class SnowflakeSource:
-    """Live Snowflake data source. Tests substitute a fake with the same shape."""
+    """Live Snowflake connection. Tests substitute a fake with the same shape."""
 
     def __init__(self, conn) -> None:
         self._conn = conn
 
     @classmethod
     def open(cls, cfg: SnowflakeConfig) -> "SnowflakeSource":
-        import snowflake.connector  # deferred: keep import cost out of tests
+        try:
+            import snowflake.connector  # deferred: an optional extra
+        except ImportError as exc:  # pragma: no cover - environment-dependent
+            raise ImportError(
+                "the Snowflake connector is not installed; install the "
+                "'snowflake' extra: pip install 'md-migration-assessment[snowflake]'"
+            ) from exc
 
         return cls(snowflake.connector.connect(**cfg.connect_kwargs()))
 
@@ -144,7 +145,7 @@ class SnowflakeSource:
             first.schema, as_record_batches(chain([first], batches))
         )
 
-    def show(self, command: str) -> tuple[pa.Table, bool]:
+    def command(self, command: str) -> tuple[pa.Table, bool]:
         """Run a SHOW command; returns (arrow table, truncated?).
 
         SHOW output is not fetchable as Arrow, so rows are materialized and
@@ -183,7 +184,8 @@ class SnowflakeSource:
             "SELECT current_account_name(), current_version(), current_region()"
         )
         account, version, region = cur.fetchone()
-        return SessionInfo(account=account, version=version, region=region)
+        # edition is not directly exposed by Snowflake
+        return SessionInfo(deployment=account, version=version, region=region)
 
     def server_time(self) -> datetime:
         """Snowflake's own clock, as a UTC-aware datetime.

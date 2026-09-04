@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 import sys
 
-from md_migration_assessment.collect.snowflake import SnowflakeConfig
+from md_migration_assessment.sources.snowflake.connection import SnowflakeConfig
 
 #: Edition-dependent statements: statement-substring -> (reason, error regex).
 #: A failure is optional ONLY when the statement is a candidate AND its error

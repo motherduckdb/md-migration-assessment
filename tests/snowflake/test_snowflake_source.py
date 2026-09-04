@@ -10,7 +10,7 @@ from __future__ import annotations
 import duckdb
 import pyarrow as pa
 
-from md_migration_assessment.collect.snowflake import as_record_batches
+from md_migration_assessment.sources.snowflake.connection import as_record_batches
 
 
 def _tables():
@@ -47,7 +47,7 @@ def test_duckdb_can_consume_reader_built_from_connector_style_tables():
 def test_ensure_typed_replaces_null_columns_from_empty_show_results():
     """Regression (found live): an empty SHOW result infers null-typed
     columns, which DuckDB binds as non-text and string probes fail."""
-    from md_migration_assessment.collect.snowflake import ensure_typed
+    from md_migration_assessment.sources.snowflake.connection import ensure_typed
 
     empty = pa.table({"name": pa.array([], pa.null()), "n": pa.array([], pa.int64())})
     fixed = ensure_typed(empty)

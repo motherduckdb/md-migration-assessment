@@ -1,24 +1,35 @@
 # md-migration-assessment
 
-Assess what a Snowflake → MotherDuck migration entails.
+Assess what a migration to MotherDuck entails.
 
-`md-assess` is a Python CLI you run against your own Snowflake account. It inventories
+`md-assess` is a Python CLI you run against your own data warehouse. It inventories
 the deployment (catalog, features, workload, spend) into a local DuckDB database and
 builds factual summaries: object inventory, sizing, workload profile, feature usage
 counts, and collection coverage, with provenance.
 
+Warehouse-specific knowledge lives in a *source adapter*; the collector, output
+schema, privacy policy, and report contract are shared. **Snowflake is the
+adapter that ships today.** See [Adding a source](#adding-a-source) for what a
+second adapter involves.
+
 **Status: pre-release (M3 complete). Feature inventory and workload facts are
 in; delivery (upload, Dive, Flight) is next. Not yet released for customer use.**
+
+## Supported sources
+
+| `--source` | Status | Install extra | Connection |
+|---|---|---|---|
+| `snowflake` (default) | complete assessment (catalog, sizing, features, workload aggregates) | `md-migration-assessment[snowflake]` | `SNOWFLAKE_*` env vars, see below |
 
 ## Trust model
 
 - **Local/private mode (default):** the collector makes zero network calls except to
-  Snowflake. No telemetry, no MotherDuck connection. Output is a single local
-  `.duckdb` file (mode `0600`) you can inspect with any DuckDB client.
+  the source warehouse. No telemetry, no MotherDuck connection. Output is a single
+  local `.duckdb` file (mode `0600`) you can inspect with any DuckDB client.
 - Uploading anything to MotherDuck is a separate, explicit command that builds a
   sanitized handoff database.
 
-## Quickstart (local mode)
+## Quickstart: Snowflake (local mode)
 
 Requires Python 3.10+ and read access to this repository (git authenticates
 with your normal GitHub credentials). Fill in the three `<...>` values, then
@@ -28,8 +39,8 @@ the whole block runs as-is:
 # 1. Install uv (skip if you already have uv, or see the pip variant below)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. Install the collector as a CLI tool
-uv tool install git+https://github.com/motherduckdb/md-migration-assessment.git
+# 2. Install the collector as a CLI tool, with the Snowflake client extra
+uv tool install "md-migration-assessment[snowflake] @ git+https://github.com/motherduckdb/md-migration-assessment.git"
 
 # 3. Snowflake connection — env vars only, nothing is written to disk
 export SNOWFLAKE_ACCOUNT="<orgname-accountname>"   # e.g. myorg-myaccount
@@ -39,9 +50,11 @@ export SNOWFLAKE_WAREHOUSE="<any_small_warehouse>" # X-Small is enough
 export SNOWFLAKE_ROLE="<role>"                     # optional; omit for default
 
 # 4. Collect into a local DuckDB file and print the summary
-md-assess collect --profile standard --output assessment.duckdb
+md-assess collect --source snowflake --profile standard --output assessment.duckdb
 md-assess report  --db assessment.duckdb
 ```
+
+`--source snowflake` is the default and may be omitted.
 
 Key-pair auth instead of a password: set `SNOWFLAKE_PRIVATE_KEY_PATH` (and
 `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` if the key is encrypted) and skip
@@ -51,18 +64,20 @@ Key-pair auth instead of a password: set `SNOWFLAKE_PRIVATE_KEY_PATH` (and
 Without uv, any of these work in its place:
 
 ```bash
-pipx install git+https://github.com/motherduckdb/md-migration-assessment.git
+pipx install "md-migration-assessment[snowflake] @ git+https://github.com/motherduckdb/md-migration-assessment.git"
 # or, into an existing virtualenv:
-pip install git+https://github.com/motherduckdb/md-migration-assessment.git
+pip install "md-migration-assessment[snowflake] @ git+https://github.com/motherduckdb/md-migration-assessment.git"
 # or, hacking on the repo itself:
 git clone https://github.com/motherduckdb/md-migration-assessment.git
-cd md-migration-assessment && uv run md-assess --help
+cd md-migration-assessment && uv run --extra snowflake md-assess --help
 ```
 
 The output is a single local `assessment.duckdb` (mode `0600`) you can open
 with any DuckDB client — the interesting tables are `report.*` (facts),
 `raw.*` (evidence), and `meta.extract_runs` (per-extractor coverage).
-Collection makes no network calls except to Snowflake.
+`meta.collections.source_kind` records which adapter produced the file, and
+the `assess`/`handoff` commands resolve the same adapter from it. Collection
+makes no network calls except to Snowflake.
 
 Two profiles: `lite` (INFORMATION_SCHEMA and SHOW only — any role, no
 ACCOUNT_USAGE access needed) and `standard` (the complete assessment:
@@ -94,10 +109,11 @@ md-assess collect --output assessment.duckdb --resume
 Resume skips extractors already `complete`, re-runs everything else (including
 previously `failed`/`unavailable` ones — useful after fixing grants), and takes
 profile/scope/window from the existing collection rather than from flags. It
-refuses to mix accounts: resuming against a different Snowflake account than
-the one recorded in `meta.collections` is an error.
+refuses to mix deployments: resuming against a different Snowflake account
+(or a different source kind) than the one recorded in `meta.collections` is
+an error.
 
-## Privileges
+## Snowflake privileges
 
 The simple path is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
 A least-privilege matrix (per-extractor Snowflake database roles, edition
@@ -142,11 +158,44 @@ Apache-2.0. Portions of the extraction SQL are derived from
 (Apache-2.0); files retain attribution headers.
 
 
-## Least-privilege matrix
+## Adding a source
+
+The repository is structured so a second warehouse is an additive package,
+not a rewrite. What is shared and what is per-source:
+
+| Shared (source-neutral) | Per-adapter (`src/md_migration_assessment/sources/<kind>/`) |
+|---|---|
+| runner: profiles, scope, ingestion, coverage rows, Ctrl+C / `--resume` semantics | connection and credentials (`open()`) |
+| `meta.*` schema and `meta.extract_runs` status contract | extractor manifest: names, privacy classes, acquisition strategies, SQL resources, `raw_schema_version` |
+| privacy classes and the fail-closed handoff column policy | error classification (`classify_error`: privilege gap vs. real failure) |
+| `report.feature_inventory` shape and observation-status contract | scope grammar (identifier syntax, case folding, quoting) |
+| CLI | feature signals and planned signals |
+| | report fact builders (`report.sizing`, workload facts, ...) |
+
+An adapter implements the `SourceAdapter` and `Connection` protocols in
+`src/md_migration_assessment/sources/base.py` and registers under a name in
+`sources/__init__.py`; its client library goes in a same-named optional extra
+in `pyproject.toml`. Extractors declare an ordered tuple of strategies from
+`collect/extractor.py`: a deployment-wide `GlobalQuery` (optionally gated
+behind `standard`), a `PerDatabaseQuery` walk that records partial coverage,
+or a client-materialized `Command` with an explicit column allowlist. The
+runner tries them in order, falling through on `unavailable` and stopping
+on a real failure.
+
+`tests/fake_adapter.py` is a complete synthetic adapter with no warehouse
+client; `tests/test_adapter_seam.py` runs collection, resume, report, and
+handoff against it and is the template for a new adapter's tests. The
+Snowflake adapter's own tests live in `tests/snowflake/`.
+
+`report.feature_inventory` is the only cross-source report relation today;
+the other `report.*` tables are adapter-owned until a second source shows
+which columns are genuinely common.
+
+## Snowflake least-privilege matrix
 
 The one-line grant is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
 To grant less, start from the tiered recommendation in
-[Privileges](#privileges) above; the matrix below lists what each individual
+[Snowflake privileges](#snowflake-privileges) above; the matrix below lists what each individual
 extractor needs. Extractors whose grants are
 withheld degrade to `unavailable` rows in `meta.extract_runs` naming the
 missing privilege; the collection stays valid. SHOW-command extracts run with

@@ -32,6 +32,17 @@ def test_meta_schema_exists(out_db):
     # meta.checkpoints was planned for per-chunk resumability and dropped
     # with decision 16 (resume is per-extractor and needs no extra table)
     assert "checkpoints" not in tables
+    # meta v3: collections are source-neutral and name their adapter
+    cols = {
+        r[0]
+        for r in out_db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'meta' AND table_name = 'collections'"
+        ).fetchall()
+    }
+    assert {"source_kind", "source_deployment", "source_version",
+            "source_region", "source_edition", "raw_schema_version"} <= cols
+    assert not any(c.startswith("snowflake_") for c in cols)
 
 
 @pytest.mark.parametrize("bad", ["md:x", "MD:x", "motherduck:x", "s3://bucket/x.duckdb"])

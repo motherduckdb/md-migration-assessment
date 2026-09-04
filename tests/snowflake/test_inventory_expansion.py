@@ -11,12 +11,17 @@ from __future__ import annotations
 
 from fixtures import REALISTIC, REALISTIC_SHOW
 
-from md_migration_assessment.collect.manifest import EXTRACTORS, Profile, load_sql
+from md_migration_assessment.sources.snowflake.manifest import EXTRACTORS, Profile, load_sql
 from md_migration_assessment.collect.runner import Scope, run_collection
 from md_migration_assessment.handoff import _projection_columns
 from md_migration_assessment.report import build_report
 
-from conftest import FakeSource
+from fake_snowflake import FakeSource
+from md_migration_assessment.sources.snowflake.manifest import (
+    account_usage_sql,
+    account_usage_view,
+)
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 M3D_NAMES = {
     "object_dependencies", "table_read_heat", "table_constraints",
@@ -40,7 +45,7 @@ def realistic_source(**overrides) -> FakeSource:
 
 def collect_and_report(out_db, profile=Profile.STANDARD, source=None):
     source = source or realistic_source()
-    coll = run_collection(out_db, source, profile=profile)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=profile)
     build_report(out_db)
     feats = {
         r[0]: dict(zip(("status", "count", "samples"), r[1:]))
@@ -65,10 +70,10 @@ def test_read_heat_is_aggregate_only_and_identity_free():
     server-side aggregate; user identities land only as a distinct count and
     nothing per-query (query ids, text) appears in the projection."""
     ex = BY_NAME["table_read_heat"]
-    assert ex.account_usage_view == "access_history"
+    assert account_usage_view(ex) == "access_history"
     assert ex.min_edition == "ENTERPRISE"
     assert ex.window_from_history_days
-    sql = load_sql("account_usage", ex.account_usage_sql)
+    sql = load_sql("account_usage", account_usage_sql(ex))
     assert "GROUP BY" in sql
     cols = _projection_columns(sql)
     forbidden = {"user_name", "query_id", "query_text", "objects_modified"}
@@ -83,7 +88,7 @@ def test_grants_summary_never_lands_the_edge_list():
     """Object names arrive only as counts; the raw grant edge list and
     per-object grants never land."""
     ex = BY_NAME["grants_to_roles_summary"]
-    sql = load_sql("account_usage", ex.account_usage_sql)
+    sql = load_sql("account_usage", account_usage_sql(ex))
     cols = _projection_columns(sql)
     assert cols == {
         "role_name", "granted_on", "n_grants", "n_privileges", "n_objects",
@@ -170,8 +175,7 @@ def test_lite_profile_covers_constraints_and_formats(out_db):
 
 def test_read_heat_scope_filters_server_side(out_db):
     source = realistic_source()
-    run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
     )
     rendered = [q for q in source.queries if "md-assess-extract: table_read_heat" in q]
     assert rendered
@@ -183,8 +187,7 @@ def test_read_heat_scope_filters_server_side(out_db):
 
 def test_object_dependencies_scope_selects_referencing_side(out_db):
     source = realistic_source()
-    run_collection(
-        out_db, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
+    run_collection(out_db, SNOWFLAKE, source, profile=Profile.STANDARD, scope=Scope.parse(["APPDB"])
     )
     rendered = [q for q in source.queries if "object_dependencies" in q]
     assert rendered
@@ -197,7 +200,7 @@ def test_object_dependencies_scope_selects_referencing_side(out_db):
 def test_m3d_handoff_excludes_embedded_sql_and_travels_clean(out_db, tmp_path):
     from md_migration_assessment.handoff import build_handoff
 
-    run_collection(out_db, realistic_source(), profile=Profile.STANDARD)
+    run_collection(out_db, SNOWFLAKE, realistic_source(), profile=Profile.STANDARD)
     build_report(out_db)
     src_path = str(tmp_path / "assessment.duckdb")
     out_db.close()
