@@ -23,6 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - name: Check tag matches project version
+        run: |
+          version="$(uv version --short)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${version}" >&2
+            exit 1
+          fi
       - run: uv build
       - run: |
           cd dist && sha256sum * > SHA256SUMS
@@ -45,6 +52,8 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # PEP 440 pre-release tags (rc/a/b/dev) publish as GitHub prereleases
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'dev') }}
 
   pypi:
     needs: build
