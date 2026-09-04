@@ -468,3 +468,57 @@ def test_cli_rejects_unknown_source_as_usage_error(tmp_path):
     assert "unknown source 'teradata'" in result.output
     assert "snowflake" in result.output
     assert "Traceback" not in result.output and "ValueError" not in result.output
+
+
+def _per_db_first_adapter():
+    import dataclasses
+
+    from fake_adapter import EXTRACTORS, PerDatabaseQuery
+
+    things = next(e for e in EXTRACTORS if e.name == "things")
+    reversed_things = dataclasses.replace(
+        things,
+        sources=(
+            PerDatabaseQuery("per_db/things.sql", "per_db"),
+            GlobalQuery("global/things.sql", "global", min_profile=Profile.STANDARD),
+        ),
+    )
+    return dataclasses.replace(ADAPTER, extractors=[reversed_things])
+
+
+def test_unavailable_database_enumeration_falls_through(out_db):
+    """Review round 2 (P1): a privilege-classified failure to enumerate
+    databases is an unavailable PerDatabaseQuery strategy, not a final
+    failure — the next declared strategy still runs."""
+    adapter = _per_db_first_adapter()
+    conn = FakeConnection()
+    conn.enumeration_error = Exception(DENIED)
+    coll = run_collection(out_db, adapter, conn, profile=Profile.STANDARD)
+    row = runs(out_db, coll)["things"]
+    assert row["status"] == "complete"
+    assert row["source_used"] == "global"
+    assert "per_db not accessible (could not enumerate databases" in row["error_detail"]
+    assert any("sys.all_things" in q for q in conn.queries)
+
+
+def test_unavailable_database_enumeration_with_no_remaining_strategy(out_db):
+    adapter = _per_db_first_adapter()
+    conn = FakeConnection()
+    conn.enumeration_error = Exception(DENIED)
+    coll = run_collection(out_db, adapter, conn, profile=Profile.LITE)  # global gated
+    row = runs(out_db, coll)["things"]
+    assert row["status"] == "unavailable"
+    assert row["error_category"] == "privilege"
+    assert row["source_used"] is None
+    assert "could not enumerate databases" in row["error_detail"]
+
+
+def test_real_database_enumeration_error_is_still_failed(out_db):
+    adapter = _per_db_first_adapter()
+    conn = FakeConnection()
+    conn.enumeration_error = Exception("network partition")
+    coll = run_collection(out_db, adapter, conn, profile=Profile.STANDARD)
+    row = runs(out_db, coll)["things"]
+    assert row["status"] == "failed"
+    assert row["retryable"] is True
+    assert not any("sys.all_things" in q for q in conn.queries)

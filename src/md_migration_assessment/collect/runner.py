@@ -635,6 +635,10 @@ def _run_per_database(
     try:
         databases = source.list_databases()
     except Exception as exc:  # noqa: BLE001
+        if adapter.classify_error(exc) == "unavailable":
+            # the role cannot even see the containers: the strategy as a
+            # whole is unavailable, so the next declared one gets its turn
+            return f"could not enumerate databases: {exc}"
         run.status = "failed"
         run.error_category = "error"
         run.error_detail = f"could not enumerate databases: {exc}"

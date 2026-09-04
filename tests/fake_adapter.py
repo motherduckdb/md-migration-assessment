@@ -233,6 +233,8 @@ class FakeConnection:
         self.command_data = {"gizmos": DEFAULT_GIZMOS}
         self.command_data.update(command_data or {})
         self.databases = databases if databases is not None else ["appdb", "otherdb"]
+        #: an exception here is raised from list_databases()
+        self.enumeration_error: BaseException | None = None
         self.deployment = deployment
         self.queries: list[str] = []
         self.closed = False
@@ -273,6 +275,8 @@ class FakeConnection:
         return entry, False
 
     def list_databases(self) -> list[str]:
+        if self.enumeration_error is not None:
+            raise self.enumeration_error
         return list(self.databases)
 
     def session_info(self) -> SessionInfo:
