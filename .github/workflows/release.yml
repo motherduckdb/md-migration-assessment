@@ -1,0 +1,72 @@
+# Release automation: on a version tag, build the sdist + wheel, attach them
+# to the GitHub release (the Flight installs the wheel by direct URL with a
+# --hash pin — spec §7), and publish to PyPI.
+#
+# PyPI publishing is DISABLED for now: the pypi job runs only when the
+# repository variable PUBLISH_TO_PYPI is set to "true" (Settings > Secrets
+# and variables > Actions > Variables). Before enabling it, complete the
+# one-time trusted-publishing setup at
+# https://pypi.org/manage/account/publishing/ — add this repo
+# (motherduckdb/md-migration-assessment), workflow release.yml, environment
+# `pypi`. The release-assets job is separate on purpose so assets attach
+# regardless.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv publishes no floating major tag past v7; pin the exact release
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: Check tag matches project version
+        run: |
+          version="$(uv version --short)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${version}" >&2
+            exit 1
+          fi
+      - run: uv build
+      - run: |
+          cd dist && sha256sum * > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true
+          # PEP 440 pre-release tags (rc/a/b/dev) publish as GitHub prereleases
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'dev') }}
+
+  pypi:
+    needs: build
+    if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - run: rm dist/SHA256SUMS
+      - uses: pypa/gh-action-pypi-publish@release/v1
