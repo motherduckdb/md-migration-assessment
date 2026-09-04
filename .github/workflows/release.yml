@@ -1,0 +1,58 @@
+# Release automation: on a version tag, build the sdist + wheel, attach them
+# to the GitHub release (the Flight installs the wheel by direct URL with a
+# --hash pin — spec §7), and publish to PyPI.
+#
+# PyPI publishing uses trusted publishing (no long-lived token): one-time
+# setup at https://pypi.org/manage/account/publishing/ — add this repo
+# (motherduckdb/md-migration-assessment), workflow release.yml, environment
+# `pypi`. Until that exists, the pypi job fails while the release assets
+# still attach (separate jobs on purpose).
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - run: |
+          cd dist && sha256sum * > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: rm dist/SHA256SUMS
+      - uses: pypa/gh-action-pypi-publish@release/v1
