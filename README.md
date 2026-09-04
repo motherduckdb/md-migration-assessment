@@ -103,6 +103,38 @@ The simple path is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <rol
 A least-privilege matrix (per-extractor Snowflake database roles, edition
 requirements, and INFORMATION_SCHEMA fallbacks) is at the bottom of this file.
 
+### Recommended minimum grant
+
+Granting less than `IMPORTED PRIVILEGES`? Use Snowflake's built-in database
+roles on the `SNOWFLAKE` database. In practice there are three meaningful
+tiers:
+
+```sql
+-- Useful floor: complete account-wide inventory + storage and spend history.
+-- Sizes the estate and the bill, but says nothing about what actually runs.
+GRANT DATABASE ROLE SNOWFLAKE.OBJECT_VIEWER TO ROLE md_assess;
+GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER  TO ROLE md_assess;
+
+-- Decision grade (recommended): adds the QUERY_HISTORY aggregates
+-- (concurrency, query shapes, dialect constructs), ACCESS_HISTORY read
+-- heat, and the masking / row-access-policy inventory — the evidence a
+-- migration decision actually turns on.
+GRANT DATABASE ROLE SNOWFLAKE.GOVERNANCE_VIEWER TO ROLE md_assess;
+
+-- Optional: login history, client-app fingerprints (SESSIONS join),
+-- roles, grant summaries, shares. Peripheral to the assessment — the
+-- right tier to concede if the security team objects.
+GRANT DATABASE ROLE SNOWFLAKE.SECURITY_VIEWER TO ROLE md_assess;
+```
+
+Any tier is safe to run: extracts whose grants are missing land as
+`unavailable` coverage rows (never silent zeros), and `--resume` re-runs
+exactly those extracts after grants are widened — no recollection needed.
+Without any of these roles the collector still works in `--profile lite`
+(INFORMATION_SCHEMA + SHOW), but coverage is limited to objects the role
+happens to have privileges on. Note `table_read_heat` also requires
+Enterprise edition regardless of role.
+
 ## License
 
 Apache-2.0. Portions of the extraction SQL are derived from
@@ -113,8 +145,9 @@ Apache-2.0. Portions of the extraction SQL are derived from
 ## Least-privilege matrix
 
 The one-line grant is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
-To grant less, use Snowflake's database roles on the `SNOWFLAKE` database — the
-matrix below lists what each extractor needs. Extractors whose grants are
+To grant less, start from the tiered recommendation in
+[Privileges](#privileges) above; the matrix below lists what each individual
+extractor needs. Extractors whose grants are
 withheld degrade to `unavailable` rows in `meta.extract_runs` naming the
 missing privilege; the collection stays valid. SHOW-command extracts run with
 any role and report the objects that role can see.
