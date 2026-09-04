@@ -10,11 +10,15 @@ import re
 
 from fixtures import REALISTIC, REALISTIC_SHOW, WORKLOAD
 
-from md_migration_assessment.collect.manifest import EXTRACTORS, Profile, load_sql
+from md_migration_assessment.sources.snowflake.manifest import EXTRACTORS, Profile, load_sql
 from md_migration_assessment.handoff import _projection_columns
 
-from conftest import FakeSource
+from fake_snowflake import FakeSource
 from test_workload import collect
+from md_migration_assessment.sources.snowflake.manifest import (
+    account_usage_sql,
+    account_usage_view,
+)
 
 M3C_NAMES = {
     "query_concurrency",
@@ -29,7 +33,7 @@ M3C = [e for e in EXTRACTORS if e.name in M3C_NAMES]
 
 def _sql(name: str) -> str:
     ex = next(e for e in M3C if e.name == name)
-    return load_sql("account_usage", ex.account_usage_sql)
+    return load_sql("account_usage", account_usage_sql(ex))
 
 
 # ── manifest boundary ───────────────────────────────────────────────────
@@ -38,7 +42,7 @@ def _sql(name: str) -> str:
 def test_m3c_extracts_declare_their_source_view():
     assert {e.name for e in M3C} == M3C_NAMES
     for ex in M3C:
-        assert ex.account_usage_view == "query_history", ex.name
+        assert account_usage_view(ex) == "query_history", ex.name
         assert ex.min_profile is Profile.STANDARD, ex.name
         assert ex.window_from_history_days, ex.name
 
@@ -134,7 +138,7 @@ def test_concurrency_observation_stops_at_the_latency_watermark():
 def test_watermark_is_disclosed_in_actual_window_end(out_db):
     from datetime import timedelta
 
-    from conftest import SERVER_ANCHOR
+    from fake_snowflake import SERVER_ANCHOR
 
     coll, source = collect(out_db)
     rows = {
@@ -280,7 +284,7 @@ def test_dialect_constructs_fact_sums_days_and_carries_heuristic_note(out_db):
 
 
 def test_m3c_unavailable_extract_degrades_not_fabricates(out_db):
-    from conftest import NOT_AUTHORIZED
+    from fake_snowflake import NOT_AUTHORIZED
 
     au = dict(REALISTIC)
     au.update(WORKLOAD)

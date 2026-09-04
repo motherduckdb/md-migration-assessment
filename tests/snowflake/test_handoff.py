@@ -9,15 +9,19 @@ import stat
 import duckdb
 import pytest
 
-from conftest import FakeSource
+from fake_snowflake import FakeSource
 
 from fixtures import REALISTIC, REALISTIC_SHOW
 
-from md_migration_assessment.collect.manifest import Profile
+from md_migration_assessment.sources.snowflake.manifest import Profile
 from md_migration_assessment.collect.runner import run_collection
 from md_migration_assessment.db import open_output
 from md_migration_assessment.handoff import build_handoff
 from md_migration_assessment.report import build_report
+from md_migration_assessment.sources.snowflake.manifest import (
+    account_usage_sql,
+)
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 
 @pytest.fixture()
@@ -28,7 +32,7 @@ def assessed_db(tmp_path):
         account_usage=dict(REALISTIC), databases=["APPDB"],
         show_data=dict(REALISTIC_SHOW),
     )
-    run_collection(con, source, profile=Profile.STANDARD)
+    run_collection(con, SNOWFLAKE, source, profile=Profile.STANDARD)
     build_report(con)
     con.close()
     return path
@@ -165,11 +169,11 @@ def test_handoff_drops_drifted_column_named_in_a_sql_comment(assessed_db, tmp_pa
 
 
 def test_projection_parser_reads_aliases_not_keywords():
-    from md_migration_assessment.collect.manifest import EXTRACTORS, load_sql
+    from md_migration_assessment.sources.snowflake.manifest import EXTRACTORS, load_sql
     from md_migration_assessment.handoff import _projection_columns
 
     functions = next(e for e in EXTRACTORS if e.name == "functions")
-    cols = _projection_columns(load_sql("account_usage", functions.account_usage_sql))
+    cols = _projection_columns(load_sql("account_usage", account_usage_sql(functions)))
     assert "is_secure" in cols       # CAST(NULL AS VARCHAR) AS is_secure → alias
     assert "varchar" not in cols     # type keyword must not leak into the allowlist
     assert "source_body" not in cols

@@ -6,13 +6,16 @@ from typing import Optional
 
 import typer
 
-from . import __version__
+from . import __version__, db
+from .collect.extractor import Profile
 from .db import open_output
-from .collect.manifest import Profile
+from .sources import SOURCE_KINDS, get_adapter
+
+DEFAULT_SOURCE = "snowflake"
 
 app = typer.Typer(
     name="md-assess",
-    help="Snowflake -> MotherDuck migration assessment.",
+    help="MotherDuck migration assessment: inventory a source warehouse into DuckDB.",
     no_args_is_help=True,
 )
 
@@ -32,6 +35,13 @@ def _main(
 
 @app.command()
 def collect(
+    source: Optional[str] = typer.Option(
+        None, "--source",
+        help=f"Source warehouse kind: {' | '.join(SOURCE_KINDS)} "
+        f"(default {DEFAULT_SOURCE}). Connection settings come from that "
+        "source's environment variables. With --resume the stored "
+        "collection's source is used; passing a different one is an error.",
+    ),
     profile: str = typer.Option("standard", help="lite | standard"),
     output: str = typer.Option("assessment.duckdb", help="Local output database path."),
     scope: list[str] = typer.Option(
@@ -46,18 +56,16 @@ def collect(
         "collection, not from these flags.",
     ),
 ) -> None:
-    """Collect a Snowflake inventory into a local DuckDB database.
+    """Collect a source-warehouse inventory into a local DuckDB database.
 
     Safe to interrupt: on Ctrl+C every extractor's state is recorded in
     meta.extract_runs and the database remains a valid partial collection;
     re-run with --resume to continue where it stopped.
     """
     from .collect.runner import Scope, run_collection
-    from .collect.snowflake import SnowflakeConfig, SnowflakeSource
     from .report import build_report
 
     prof = Profile.parse(profile)
-    parsed_scope = Scope.parse(scope)
     if resume and (scope or profile != "standard" or history_days != 30):
         typer.echo(
             "note: --resume continues the existing collection; profile, "
@@ -69,14 +77,33 @@ def collect(
     def progress(msg: str) -> None:
         typer.echo(msg, err=True)
 
-    cfg = SnowflakeConfig.from_env()
     con = open_output(output)
-    source = SnowflakeSource.open(cfg)
+    # Resolve the adapter from LOCAL state before any warehouse connection
+    # is opened: a resume continues the stored collection's source, so it
+    # must never connect to the default (or any other) source first.
+    try:
+        if resume:
+            stored = db.load_collection(con)
+            if source is not None and source.lower() != stored.source_kind:
+                raise ValueError(
+                    f"--source {source!r} conflicts with the existing collection "
+                    f"(source {stored.source_kind!r}); --resume continues the "
+                    "stored source, so omit --source"
+                )
+            adapter = get_adapter(stored.source_kind)
+        else:
+            adapter = get_adapter(source or DEFAULT_SOURCE)
+        parsed_scope = Scope.parse(scope, adapter.scope)
+    except ValueError as exc:
+        con.close()
+        raise typer.BadParameter(str(exc)) from None
+    conn = adapter.open()
     try:
         try:
             coll = run_collection(
                 con,
-                source,
+                adapter,
+                conn,
                 profile=prof,
                 scope=parsed_scope,
                 history_days=history_days,
@@ -92,8 +119,6 @@ def collect(
             except Exception:  # noqa: BLE001 — best effort on the way out
                 pass
             try:
-                from .collect.manifest import EXTRACTORS
-
                 covered = con.execute(
                     "SELECT count(DISTINCT extractor) FROM meta.extract_runs"
                 ).fetchone()[0]
@@ -103,7 +128,9 @@ def collect(
                 # consistent interrupted state = full coverage rows AND the
                 # collection visibly unfinished (a second Ctrl+C can land
                 # inside the repair and leave either half undone)
-                complete_coverage = covered == len(EXTRACTORS) and finished is None
+                complete_coverage = (
+                    covered == len(adapter.extractors) and finished is None
+                )
             except Exception:  # noqa: BLE001
                 complete_coverage = False
             if complete_coverage:
@@ -126,7 +153,7 @@ def collect(
             raise typer.Exit(130) from None
         build_report(con)
     finally:
-        source.close()
+        conn.close()
         con.close()
 
     typer.echo(f"collection {coll.collection_id} written to {output}")
@@ -177,18 +204,26 @@ def report(
 
     con = duckdb.connect(db, read_only=True)
     try:
+        try:
+            from .db import check_meta_version
+
+            check_meta_version(con)
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from None
         coll = con.execute(
             """
-            SELECT collection_id, profile, mode, snowflake_account, started_at, finished_at
+            SELECT collection_id, profile, mode, source_kind, source_deployment,
+                   started_at, finished_at
             FROM meta.collections ORDER BY started_at DESC LIMIT 1
             """
         ).fetchone()
         if coll is None:
             typer.echo("no collections found")
             raise typer.Exit(1)
-        cid, profile, mode, account, started, finished = coll
+        cid, profile, mode, kind, deployment, started, finished = coll
         typer.echo(f"\ncollection {cid}")
-        typer.echo(f"  profile={profile} mode={mode} account={account}")
+        typer.echo(f"  source={kind} deployment={deployment} profile={profile} mode={mode}")
         typer.echo(f"  started={started} finished={finished}\n")
 
         rows = con.execute(

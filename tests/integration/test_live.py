@@ -18,9 +18,10 @@ import os
 
 import pytest
 
-from md_migration_assessment.collect.manifest import EXTRACTORS, Profile
+from md_migration_assessment.sources.snowflake.manifest import EXTRACTORS, Profile
 from md_migration_assessment.collect.runner import Scope, run_collection
 from md_migration_assessment.db import open_output
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("SNOWFLAKE_ACCOUNT"),
@@ -30,7 +31,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def source():
-    from md_migration_assessment.collect.snowflake import SnowflakeConfig, SnowflakeSource
+    from md_migration_assessment.sources.snowflake.connection import SnowflakeConfig, SnowflakeSource
 
     src = SnowflakeSource.open(SnowflakeConfig.from_env())
     yield src
@@ -57,7 +58,7 @@ def _print_report(runs):
 
 def test_lite_profile(tmp_path, source):
     con = open_output(str(tmp_path / "lite.duckdb"))
-    coll = run_collection(con, source, profile=Profile.LITE)
+    coll = run_collection(con, SNOWFLAKE, source, profile=Profile.LITE)
     runs = _runs(con, coll)
     _print_report(runs)
 
@@ -113,10 +114,10 @@ def test_lite_profile(tmp_path, source):
 
 def test_standard_profile(tmp_path, source):
     from md_migration_assessment.report import build_report
-    from md_migration_assessment.report.signals import PLANNED_SIGNALS, SIGNALS
+    from md_migration_assessment.sources.snowflake.signals import PLANNED_SIGNALS, SIGNALS
 
     con = open_output(str(tmp_path / "standard.duckdb"))
-    coll = run_collection(con, source, profile=Profile.STANDARD)
+    coll = run_collection(con, SNOWFLAKE, source, profile=Profile.STANDARD)
     runs = _runs(con, coll)
     _print_report(runs)
 
@@ -196,7 +197,7 @@ def test_workload_extracts_live(tmp_path, source):
     from md_migration_assessment.report import build_report
 
     con = open_output(str(tmp_path / "workload.duckdb"))
-    coll = run_collection(con, source, profile=Profile.STANDARD, history_days=30)
+    coll = run_collection(con, SNOWFLAKE, source, profile=Profile.STANDARD, history_days=30)
     runs = _runs(con, coll)
     _print_report(runs)
 
@@ -234,7 +235,7 @@ def test_workload_extracts_live(tmp_path, source):
 def test_standard_profile_scoped(tmp_path, source):
     con = open_output(str(tmp_path / "scoped.duckdb"))
     scope = Scope.parse(["MDA_TEST_MAIN"])
-    coll = run_collection(con, source, profile=Profile.STANDARD, scope=scope)
+    coll = run_collection(con, SNOWFLAKE, source, profile=Profile.STANDARD, scope=scope)
     runs = _runs(con, coll)
 
     failed = {n: r for n, r in runs.items() if r["status"] == "failed"}

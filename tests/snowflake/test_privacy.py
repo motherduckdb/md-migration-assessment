@@ -3,7 +3,7 @@ and the classes drive handoff behavior."""
 
 from __future__ import annotations
 
-from md_migration_assessment.collect.manifest import EXTRACTORS
+from md_migration_assessment.sources.snowflake.manifest import EXTRACTORS
 from md_migration_assessment.privacy import (
     HANDOFF_DISCLOSED_CLASSES,
     HANDOFF_EXCLUDED_CLASSES,

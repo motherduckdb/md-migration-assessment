@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "md-migration-assessment"
 version = "0.1.0"
-description = "Snowflake -> MotherDuck migration assessment: inventory a Snowflake account into DuckDB and assess what a migration entails."
+description = "MotherDuck migration assessment: inventory a source data warehouse into DuckDB and assess what a migration entails (Snowflake adapter included)."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -19,15 +19,22 @@ classifiers = [
 dependencies = [
     "duckdb>=1.3",
     "pyarrow>=16",
-    # [pandas] is required even though we never materialize pandas objects:
-    # the connector's fetch_arrow_all() gates on pandas being installed.
-    "snowflake-connector-python[pandas]>=3.12",
     "typer>=0.12",
 ]
 
+# Warehouse client libraries are per-source extras: install the one for the
+# source you are assessing, e.g. `pip install 'md-migration-assessment[snowflake]'`.
+# The adapter imports its client lazily and reports a clear error if the
+# extra is missing.
 [project.optional-dependencies]
+snowflake = [
+    # [pandas] is required even though we never materialize pandas objects:
+    # the connector's fetch_arrow_all() gates on pandas being installed.
+    "snowflake-connector-python[pandas]>=4.7.1",  # <4.7.1: TLS hostname verification flaw (GHSA, critical)
+]
 dev = [
     "pytest>=8",
+    "md-migration-assessment[snowflake]",
 ]
 
 [project.urls]

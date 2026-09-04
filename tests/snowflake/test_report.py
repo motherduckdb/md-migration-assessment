@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import NOT_AUTHORIZED, FakeSource
+from fake_snowflake import NOT_AUTHORIZED, FakeSource
 
 from fixtures import REALISTIC, REALISTIC_SHOW
 
-from md_migration_assessment.collect.manifest import Profile
+from md_migration_assessment.sources.snowflake.manifest import Profile
 from md_migration_assessment.collect.runner import run_collection
 from md_migration_assessment.report import build_report
-from md_migration_assessment.report.signals import PLANNED_SIGNALS, SIGNALS
+from md_migration_assessment.sources.snowflake.signals import PLANNED_SIGNALS, SIGNALS
+from md_migration_assessment.sources.snowflake import ADAPTER as SNOWFLAKE
 
 
 def collect_and_report(out_db, source, profile=Profile.STANDARD):
-    coll = run_collection(out_db, source, profile=profile)
+    coll = run_collection(out_db, SNOWFLAKE, source, profile=profile)
     build_report(out_db)
     rows = out_db.execute(
         """
