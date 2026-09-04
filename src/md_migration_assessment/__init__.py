@@ -4,7 +4,14 @@ Source-specific knowledge lives in :mod:`md_migration_assessment.sources`;
 Snowflake is the first (and currently only) adapter.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+try:
+    # Single source of truth is pyproject's [project].version; this string
+    # is recorded in meta.collections.tool_version and printed by --version.
+    __version__ = _dist_version("md-migration-assessment")
+except PackageNotFoundError:  # source tree without an install
+    __version__ = "0+unknown"
 
 # Version of the meta.* table shapes. (raw.* shape versions are per source
 # adapter — see each adapter's manifest.)
