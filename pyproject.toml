@@ -30,7 +30,7 @@ dependencies = [
 snowflake = [
     # [pandas] is required even though we never materialize pandas objects:
     # the connector's fetch_arrow_all() gates on pandas being installed.
-    "snowflake-connector-python[pandas]>=3.12",
+    "snowflake-connector-python[pandas]>=4.7.1",  # <4.7.1: TLS hostname verification flaw (GHSA, critical)
 ]
 dev = [
     "pytest>=8",
