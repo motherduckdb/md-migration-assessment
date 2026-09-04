@@ -222,10 +222,12 @@ def run_collection(
     an ``interrupted`` row, ``finished_at`` stays NULL, and the interrupt is
     re-raised. The database is a valid partial collection at every point.
     """
-    info = source.session_info()
     extractors = adapter.extractors
 
     if resume:
+        # Validate the stored collection against the adapter BEFORE the
+        # connection is used for anything: a resume must never issue a
+        # query to a warehouse the collection did not come from.
         coll = db.load_collection(con)
         if coll.source_kind != adapter.name:
             raise ValueError(
@@ -238,6 +240,7 @@ def run_collection(
                 f"v{coll.raw_schema_version}, this tool writes "
                 f"v{adapter.raw_schema_version}. Re-collect into a new file."
             )
+        info = source.session_info()
         # Mixing deployments inside one collection would silently blend two
         # estates' evidence under one collection_id.
         if coll.source_deployment and info.deployment and (
@@ -283,6 +286,7 @@ def run_collection(
                 "collection to a new file, or pass --resume to continue an "
                 "incomplete one"
             )
+        info = source.session_info()
         coll = Collection(
             profile=profile.name.lower(),
             source_kind=adapter.name,
@@ -428,7 +432,7 @@ def _run_extractor(
     # Strategies in declared order. 'unavailable' falls through to the next
     # one and is remembered so a successful fallback can disclose it; a real
     # failure stops here.
-    unavailable: list[tuple[str, BaseException]] = []
+    unavailable: list[tuple[str, BaseException | str]] = []
     skipped_by_profile = False
     for strategy in ex.sources:
         if isinstance(strategy, Command):
@@ -457,6 +461,7 @@ def _run_extractor(
                 run.rows_written = ing.finish()
                 run.status = "complete"
                 run.source_used = strategy.label
+                run.error_detail = _fallback_note(unavailable, strategy.label)
                 if window_days is not None:
                     run.actual_window_end = anchor - timedelta(
                         minutes=ex.window_end_lag_minutes
@@ -473,11 +478,16 @@ def _run_extractor(
                 unavailable.append((strategy.label, exc))
                 continue
         if isinstance(strategy, PerDatabaseQuery):
-            _run_per_database(
+            fell_through = _run_per_database(
                 source, con, coll, ex, strategy, scope, scope_pred, window_days,
                 run, adapter, unavailable,
             )
-            return run
+            if fell_through is None:
+                return run
+            # every database was a privilege/visibility gap: the strategy as
+            # a whole is unavailable, so the next one gets its turn
+            unavailable.append((strategy.label, fell_through))
+            continue
 
     # Nothing succeeded and no strategy remains.
     run.status = "unavailable"
@@ -613,9 +623,15 @@ def _run_per_database(
     window_days: int | None,
     run: ExtractRun,
     adapter: SourceAdapter,
-    unavailable_before: list[tuple[str, BaseException]],
-) -> None:
-    """One walk per accessible (or scoped) database."""
+    unavailable_before: list[tuple[str, BaseException | str]],
+) -> str | None:
+    """One walk per accessible (or scoped) database.
+
+    Returns None when the outcome is final (complete, partial, or failed —
+    ``run`` has been filled in), or the failure summary when EVERY database
+    was a privilege/visibility gap: then ``run`` is left untouched so the
+    caller can fall through to the next strategy.
+    """
     try:
         databases = source.list_databases()
     except Exception as exc:  # noqa: BLE001
@@ -623,7 +639,7 @@ def _run_per_database(
         run.error_category = "error"
         run.error_detail = f"could not enumerate databases: {exc}"
         run.retryable = True
-        return
+        return None
     norm = adapter.scope.normalize
     ing = _Ingestor(con, coll, ex.target_table)
     succeeded: list[str] = []
@@ -654,24 +670,37 @@ def _run_per_database(
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{database}: {exc}")
             failure_kinds.add(adapter.classify_error(exc))
-    run.rows_written = ing.finish()
-    run.source_used = strategy.label
-    run.actual_scope = succeeded
     # Only privilege-shaped errors may read as "unavailable"; anything else
     # is a real failure and must not masquerade as a permissions gap.
     privilege_only = failure_kinds == {"unavailable"}
+    if failures and not succeeded and privilege_only:
+        # nothing ingested (the ingestor created no table), nothing recorded
+        return "no database could be read: " + "; ".join(failures[:5])
+    run.rows_written = ing.finish()
+    run.source_used = strategy.label
+    run.actual_scope = succeeded
     if failures and succeeded:
         run.status = "partial"
         run.error_category = "privilege" if privilege_only else "error"
         run.error_detail = "some databases could not be read: " + "; ".join(failures[:5])
         run.retryable = True
     elif failures:
-        run.status = "unavailable" if privilege_only else "failed"
-        run.error_category = "privilege" if privilege_only else "error"
+        run.status = "failed"
+        run.error_category = "error"
         run.error_detail = "no database could be read: " + "; ".join(failures[:5])
-        run.retryable = not privilege_only
+        run.retryable = True
     else:
         run.status = "complete"
-        if unavailable_before:
-            prior = "; ".join(f"{label} not accessible ({exc})" for label, exc in unavailable_before)
-            run.error_detail = f"{prior}; used {strategy.label} fallback"
+        run.error_detail = _fallback_note(unavailable_before, strategy.label)
+    return None
+
+
+def _fallback_note(
+    unavailable: list[tuple[str, BaseException | str]], label: str
+) -> str | None:
+    """Disclose, on a successful extract, which earlier strategies were
+    unavailable — a fallback is coverage information, not silent recovery."""
+    if not unavailable:
+        return None
+    prior = "; ".join(f"{lbl} not accessible ({exc})" for lbl, exc in unavailable)
+    return f"{prior}; used {label} fallback"

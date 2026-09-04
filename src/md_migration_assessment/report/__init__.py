@@ -70,6 +70,10 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                 "not provided pre-1.0)."
             )
 
+    # report.* is tool-owned and rebuilt from scratch: a relation an older
+    # adapter version produced must not survive a rebuild that no longer
+    # declares it (handoff copies every report table wholesale).
+    con.execute("DROP SCHEMA IF EXISTS report CASCADE")
     con.execute(_FEATURE_DDL)
     summary = {"collections": len(collections), "features": 0, "unknown": 0}
 

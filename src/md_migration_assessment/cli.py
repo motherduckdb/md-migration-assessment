@@ -6,10 +6,12 @@ from typing import Optional
 
 import typer
 
-from . import __version__
+from . import __version__, db
 from .collect.extractor import Profile
 from .db import open_output
 from .sources import SOURCE_KINDS, get_adapter
+
+DEFAULT_SOURCE = "snowflake"
 
 app = typer.Typer(
     name="md-assess",
@@ -33,10 +35,12 @@ def _main(
 
 @app.command()
 def collect(
-    source: str = typer.Option(
-        "snowflake", "--source",
-        help=f"Source warehouse kind: {' | '.join(SOURCE_KINDS)}. "
-        "Connection settings come from that source's environment variables.",
+    source: Optional[str] = typer.Option(
+        None, "--source",
+        help=f"Source warehouse kind: {' | '.join(SOURCE_KINDS)} "
+        f"(default {DEFAULT_SOURCE}). Connection settings come from that "
+        "source's environment variables. With --resume the stored "
+        "collection's source is used; passing a different one is an error.",
     ),
     profile: str = typer.Option("standard", help="lite | standard"),
     output: str = typer.Option("assessment.duckdb", help="Local output database path."),
@@ -61,9 +65,7 @@ def collect(
     from .collect.runner import Scope, run_collection
     from .report import build_report
 
-    adapter = get_adapter(source)
     prof = Profile.parse(profile)
-    parsed_scope = Scope.parse(scope, adapter.scope)
     if resume and (scope or profile != "standard" or history_days != 30):
         typer.echo(
             "note: --resume continues the existing collection; profile, "
@@ -76,6 +78,25 @@ def collect(
         typer.echo(msg, err=True)
 
     con = open_output(output)
+    # Resolve the adapter from LOCAL state before any warehouse connection
+    # is opened: a resume continues the stored collection's source, so it
+    # must never connect to the default (or any other) source first.
+    try:
+        if resume:
+            stored = db.load_collection(con)
+            if source is not None and source.lower() != stored.source_kind:
+                raise ValueError(
+                    f"--source {source!r} conflicts with the existing collection "
+                    f"(source {stored.source_kind!r}); --resume continues the "
+                    "stored source, so omit --source"
+                )
+            adapter = get_adapter(stored.source_kind)
+        else:
+            adapter = get_adapter(source or DEFAULT_SOURCE)
+        parsed_scope = Scope.parse(scope, adapter.scope)
+    except ValueError as exc:
+        con.close()
+        raise typer.BadParameter(str(exc)) from None
     conn = adapter.open()
     try:
         try:
@@ -183,6 +204,13 @@ def report(
 
     con = duckdb.connect(db, read_only=True)
     try:
+        try:
+            from .db import check_meta_version
+
+            check_meta_version(con)
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from None
         coll = con.execute(
             """
             SELECT collection_id, profile, mode, source_kind, source_deployment,

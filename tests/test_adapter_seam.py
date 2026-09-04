@@ -322,3 +322,149 @@ def test_empty_result_is_observed_zero(out_db):
         "SELECT observation_status FROM report.feature_inventory WHERE feature = 'spicy_things'"
     ).fetchone()[0]
     assert status == "observed_zero"
+
+
+# ── review round 1 (PR #2) ───────────────────────────────────────────────
+
+
+def test_wholly_unavailable_per_database_strategy_falls_through(out_db):
+    """P1: the ordered-strategy contract must hold when a PerDatabaseQuery
+    comes first and every database is a privilege gap — the next strategy
+    still gets its turn."""
+    import dataclasses
+
+    from fake_adapter import EXTRACTORS, PerDatabaseQuery
+
+    things = next(e for e in EXTRACTORS if e.name == "things")
+    reversed_things = dataclasses.replace(
+        things,
+        sources=(
+            PerDatabaseQuery("per_db/things.sql", "per_db"),
+            GlobalQuery("global/things.sql", "global", min_profile=Profile.STANDARD),
+        ),
+    )
+    adapter = dataclasses.replace(ADAPTER, extractors=[reversed_things])
+    conn = FakeConnection(
+        per_db_data={"things": {"appdb": Exception(DENIED), "otherdb": Exception(DENIED)}}
+    )
+    coll = run_collection(out_db, adapter, conn, profile=Profile.STANDARD)
+    row = runs(out_db, coll)["things"]
+    assert row["status"] == "complete"
+    assert row["source_used"] == "global"
+    assert row["rows_written"] == 3
+    assert "per_db not accessible" in row["error_detail"]
+    assert any("sys.all_things" in q for q in conn.queries)
+
+    # ...and when nothing remains after the fall-through, it is unavailable
+    # with the per-database failures disclosed (not a real failure)
+    out_db.execute("DELETE FROM meta.collections")
+    out_db.execute("DELETE FROM meta.extract_runs")
+    coll = run_collection(out_db, adapter, conn, profile=Profile.LITE)  # global gated
+    row = runs(out_db, coll)["things"]
+    assert row["status"] == "unavailable"
+    assert row["error_category"] == "privilege"
+    assert row["source_used"] is None
+    assert "per_db: no database could be read" in row["error_detail"]
+
+
+def test_resume_validates_stored_collection_before_using_the_connection(out_db):
+    """P1: a resume must not talk to the warehouse until the stored
+    collection has been checked against the adapter in use."""
+    run_collection(out_db, ADAPTER, FakeConnection(), profile=Profile.LITE)
+    out_db.execute("UPDATE meta.extract_runs SET status = 'failed' WHERE extractor = 'things'")
+
+    class Untouchable(FakeConnection):
+        def session_info(self):
+            raise AssertionError("connection used before the stored collection was validated")
+
+    snowflake = get_adapter("snowflake")
+    with pytest.raises(ValueError, match="source 'fakewh'"):
+        run_collection(out_db, snowflake, Untouchable(), profile=Profile.LITE, resume=True)
+
+
+def test_cli_resume_resolves_the_stored_adapter_locally(tmp_path):
+    """P1: `md-assess collect --resume` on a non-default source's database
+    must open THAT source, never the default Snowflake connection."""
+    from typer.testing import CliRunner
+
+    from md_migration_assessment.cli import app
+
+    path = str(tmp_path / "fake.duckdb")
+    con = open_output(path)
+    run_collection(con, ADAPTER, FakeConnection(), profile=Profile.LITE)
+    con.execute("UPDATE meta.extract_runs SET status = 'failed' WHERE extractor = 'things'")
+    con.close()
+
+    runner = CliRunner()
+    # default --source omitted: the stored 'fakewh' adapter is opened (its
+    # open() deliberately raises, proving Snowflake was never attempted)
+    result = runner.invoke(app, ["collect", "--output", path, "--resume"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, RuntimeError)
+    assert "fake adapter has no environment" in str(result.exception)
+
+    # an explicit conflicting --source is a usage error, rejected locally
+    result = runner.invoke(app, ["collect", "--output", path, "--resume", "--source", "snowflake"])
+    assert result.exit_code == 2
+    assert "conflicts with the existing collection" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_pre_v3_meta_schema_is_a_clear_recollect_error(tmp_path):
+    """P2: META_SCHEMA_VERSION is validated before any v3-only column is
+    read — a v2 file gets the re-collect guidance, not a binder error."""
+    path = str(tmp_path / "old.duckdb")
+    con = open_output(path)
+    run_collection(con, ADAPTER, FakeConnection(), profile=Profile.LITE)
+    # shape a v2 file: no source_kind column, stamped v2
+    con.execute("ALTER TABLE meta.collections DROP COLUMN source_kind")
+    con.execute("UPDATE meta.collections SET meta_schema_version = 2")
+    with pytest.raises(ValueError, match="meta schema v2.*[Rr]e-collect"):
+        build_report(con)
+    with pytest.raises(ValueError, match="meta schema v2"):
+        run_collection(con, ADAPTER, FakeConnection(), profile=Profile.LITE, resume=True)
+    con.close()
+    with pytest.raises(ValueError, match="meta schema v2"):
+        build_handoff(path, str(tmp_path / "h.duckdb"))
+
+    from typer.testing import CliRunner
+
+    from md_migration_assessment.cli import app
+
+    result = CliRunner().invoke(app, ["report", "--db", path])
+    assert result.exit_code == 1
+    assert "meta schema v2" in result.output
+    assert "BinderException" not in result.output
+
+
+def test_report_rebuild_removes_obsolete_report_relations(out_db):
+    """P2: report.* is tool-owned; a relation from an older adapter version
+    must not survive a rebuild (handoff would ship it)."""
+    run_collection(out_db, ADAPTER, FakeConnection(), profile=Profile.STANDARD)
+    build_report(out_db)
+    out_db.execute("CREATE TABLE report.stale_facts AS SELECT 1 AS leftover")
+    out_db.execute("CREATE VIEW report.stale_view AS SELECT 1 AS leftover")
+    build_report(out_db)
+    relations = {
+        r[0] for r in out_db.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'report'"
+        ).fetchall()
+    }
+    assert "stale_facts" not in relations and "stale_view" not in relations
+    assert {"feature_inventory", "widget_totals"} <= relations
+
+
+def test_cli_rejects_unknown_source_as_usage_error(tmp_path):
+    """P3: a bad --source is a usage error with the supported list, not a
+    Python traceback."""
+    from typer.testing import CliRunner
+
+    from md_migration_assessment.cli import app
+
+    result = CliRunner().invoke(
+        app, ["collect", "--source", "teradata", "--output", str(tmp_path / "x.duckdb")]
+    )
+    assert result.exit_code == 2
+    assert "unknown source 'teradata'" in result.output
+    assert "snowflake" in result.output
+    assert "Traceback" not in result.output and "ValueError" not in result.output

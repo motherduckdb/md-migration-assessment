@@ -211,6 +211,29 @@ def reopen_collection(con: duckdb.DuckDBPyConnection, coll: Collection) -> None:
     )
 
 
+def check_meta_version(con: duckdb.DuckDBPyConnection) -> None:
+    """Refuse a file written under a different meta schema version.
+
+    Reads only ``meta_schema_version``, which every version has carried, so
+    the guidance is a clear "re-collect" instead of a binder error on a
+    column the old shape never had. Must run before any version-specific
+    column of meta.* is selected.
+    """
+    versions = {
+        v
+        for (v,) in con.execute(
+            "SELECT DISTINCT meta_schema_version FROM meta.collections"
+        ).fetchall()
+    }
+    stale = sorted(v for v in versions if v != META_SCHEMA_VERSION)
+    if stale:
+        raise ValueError(
+            f"this database has meta schema v{stale[0]}; this tool reads "
+            f"v{META_SCHEMA_VERSION}. Re-collect into a new file (explicit "
+            "migrations are not provided pre-1.0)."
+        )
+
+
 def load_collection(con: duckdb.DuckDBPyConnection) -> Collection:
     """Load the database's single collection for --resume.
 
@@ -218,6 +241,7 @@ def load_collection(con: duckdb.DuckDBPyConnection) -> Collection:
     history window, and source kind come from here, never from fresh CLI
     flags.
     """
+    check_meta_version(con)
     rows = con.execute(
         """
         SELECT collection_id, profile, mode, scope, query_text_mode,
@@ -255,6 +279,7 @@ def collection_kinds(con: duckdb.DuckDBPyConnection) -> list[tuple[str, str, int
     """``(collection_id, source_kind, raw_schema_version)`` for every
     collection in the file — what report and handoff need to resolve the
     adapter and refuse version skew."""
+    check_meta_version(con)
     return [
         (str(cid), kind, raw_version)
         for cid, kind, raw_version in con.execute(
