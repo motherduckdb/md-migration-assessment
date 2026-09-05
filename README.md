@@ -38,7 +38,7 @@ a release notes a schema change. See [Support](SUPPORT.md) and
 ## Quickstart: Snowflake (local mode)
 
 Requires Python 3.10+. Fill in the `<...>` values, then the whole block runs
-as-is. This installs the versioned `v0.1.2` GitHub release asset rather than
+as-is. This installs the versioned `v0.1.3` GitHub release asset rather than
 the moving `main` branch:
 
 ```bash
@@ -46,7 +46,7 @@ the moving `main` branch:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Install the collector as a CLI tool, with the Snowflake client extra
-uv tool install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.2/md_migration_assessment-0.1.2-py3-none-any.whl"
+uv tool install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.3/md_migration_assessment-0.1.3-py3-none-any.whl"
 
 # 3. Snowflake connection — external-browser SSO is the recommended default
 export SNOWFLAKE_ACCOUNT="<orgname-accountname>"   # e.g. myorg-myaccount
@@ -71,9 +71,9 @@ shell history or checked-in environment files.
 Without uv, any of these work in its place:
 
 ```bash
-pipx install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.2/md_migration_assessment-0.1.2-py3-none-any.whl"
+pipx install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.3/md_migration_assessment-0.1.3-py3-none-any.whl"
 # or, into an existing virtualenv:
-pip install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.2/md_migration_assessment-0.1.2-py3-none-any.whl"
+pip install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.3/md_migration_assessment-0.1.3-py3-none-any.whl"
 # or, hacking on the repo itself:
 git clone https://github.com/motherduckdb/md-migration-assessment.git
 cd md-migration-assessment && uv run --extra snowflake md-assess --help
