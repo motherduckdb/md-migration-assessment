@@ -20,6 +20,14 @@ observed, and missing evidence is never presented as zero:
 - ``unknown``        — the source extract was unavailable/failed/partial-empty,
                        or the probe itself errored
 - ``not_requested``  — the collection profile did not include the source
+
+Visibility-bound sources (strategies flagged ``visibility_bound``, e.g. a
+listing that shows only objects the collecting role can see) keep these
+statuses but every row carries a note: an ``observed`` count is a lower
+bound, and an ``observed_zero`` may be a grant gap rather than absence.
+Downgrading such zeros to ``unknown`` was considered and rejected: most
+deployments genuinely have none of many inventoried object kinds, and the
+inventory would drown in unknowns. The note is the honest middle.
 """
 
 from __future__ import annotations
@@ -31,6 +39,11 @@ from ..sources import get_adapter
 from .facts import table_exists
 
 __all__ = ["build_report", "table_exists"]
+
+
+def _join(*parts: str | None) -> str | None:
+    kept = [p for p in parts if p]
+    return "; ".join(kept) if kept else None
 
 _FEATURE_DDL = """
 CREATE SCHEMA IF NOT EXISTS report;
@@ -76,6 +89,12 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
     con.execute(_FEATURE_DDL)
     summary = {"collections": len(collections), "features": 0, "unknown": 0}
 
+    # source_used label -> whether that strategy is visibility-bound, per extractor
+    bound_labels: dict[str, set[str]] = {
+        ex.name: {s.label for s in ex.sources if getattr(s, "visibility_bound", False)}
+        for ex in (adapter.extractors if adapter else [])
+    }
+
     for cid, _, _ in collections:
         runs = {
             r[0]: {"status": r[1], "source_used": r[2]}
@@ -103,12 +122,28 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                     ).fetchone()
                     count = int(n)
                     samples = [str(s) for s in (sample_objects or [])]
+                    bound = run["source_used"] in bound_labels.get(
+                        sig.source_extractor, set()
+                    )
                     if count > 0:
                         obs = "observed"
                         if run["status"] == "partial":
                             note = "source coverage partial — count is a lower bound"
+                        if bound:
+                            note = _join(
+                                note,
+                                "source lists only objects visible to the "
+                                "collecting role — count is a lower bound",
+                            )
                     elif run["status"] == "complete":
                         obs = "observed_zero"
+                        if bound:
+                            note = (
+                                "zero under role visibility: the source lists "
+                                "only objects the collecting role can see, so "
+                                "this may reflect missing grants rather than "
+                                "absence"
+                            )
                     else:
                         obs = "unknown"
                         count = None

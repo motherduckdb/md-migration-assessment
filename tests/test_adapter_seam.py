@@ -522,3 +522,58 @@ def test_real_database_enumeration_error_is_still_failed(out_db):
     assert row["status"] == "failed"
     assert row["retryable"] is True
     assert not any("sys.all_things" in q for q in conn.queries)
+
+
+# ── visibility-bound strategies ──────────────────────────────────────────
+
+
+def test_visibility_bound_command_is_disclosed_in_coverage_and_report(out_db):
+    """A listing that shows only what the role can see is recorded complete,
+    but the coverage row and every report row derived from it say so."""
+    coll = run_collection(out_db, ADAPTER, FakeConnection(), profile=Profile.STANDARD)
+    st = runs(out_db, coll)
+    assert st["gizmos"]["status"] == "complete"
+    assert "role-visibility bound" in st["gizmos"]["error_detail"]
+    assert "lower bound" in st["gizmos"]["error_detail"]
+    # the per-database walk is NOT flagged in the fake adapter: no note
+    assert st["things"]["status"] == "complete" and st["things"]["error_detail"] is None
+
+    build_report(out_db)
+    notes = dict(out_db.execute(
+        "SELECT feature, note FROM report.feature_inventory"
+    ).fetchall())
+    assert "visible to the collecting role" in notes["mint_gizmos"]
+    assert "lower bound" in notes["mint_gizmos"]
+    assert notes["spicy_things"] is None
+
+
+def test_visibility_bound_zero_is_observed_zero_with_a_grant_caveat(out_db):
+    empty = pa.table({
+        "name": pa.array([], pa.string()), "db_name": pa.array([], pa.string()),
+        "schema_name": pa.array([], pa.string()), "flavor": pa.array([], pa.string()),
+    })
+    run_collection(
+        out_db, ADAPTER, FakeConnection(command_data={"gizmos": empty}),
+        profile=Profile.STANDARD,
+    )
+    build_report(out_db)
+    status, count, note = out_db.execute(
+        "SELECT observation_status, count, note FROM report.feature_inventory "
+        "WHERE feature = 'mint_gizmos'"
+    ).fetchone()
+    assert status == "observed_zero" and count == 0
+    assert "missing grants" in note
+
+
+def test_visibility_note_composes_with_scope_and_truncation_notes(out_db):
+    scope = Scope.parse(["appdb"], ADAPTER.scope)
+    coll = run_collection(out_db, ADAPTER, FakeConnection(), profile=Profile.LITE, scope=scope)
+    detail = runs(out_db, coll)["gizmos"]["error_detail"]
+    assert "filtered client-side" in detail and "role-visibility bound" in detail
+
+    out_db.execute("DELETE FROM meta.collections"); out_db.execute("DELETE FROM meta.extract_runs")
+    conn = FakeConnection(command_data={"gizmos": (FakeConnection().command_data["gizmos"], True)})
+    coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
+    row = runs(out_db, coll)["gizmos"]
+    assert row["status"] == "partial"
+    assert "truncated" in row["error_detail"] and "role-visibility bound" in row["error_detail"]

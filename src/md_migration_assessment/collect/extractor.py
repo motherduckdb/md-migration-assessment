@@ -79,6 +79,11 @@ class PerDatabaseQuery:
     #: SQL resource path with ``{database}`` / ``{database_literal}``
     sql: str
     label: str
+    #: the source lists only objects the collecting role can see, and
+    #: objects it cannot see are undetectable: a successful extract is a
+    #: lower bound, never proof of absence. Disclosed in meta.extract_runs
+    #: and carried into report rows (see :mod:`..report`).
+    visibility_bound: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,8 @@ class Command:
     #: explicit handoff allowlist: server-defined output has no projection
     expected_columns: tuple[str, ...]
     label: str
+    #: see PerDatabaseQuery.visibility_bound (true for e.g. Snowflake SHOW)
+    visibility_bound: bool = False
 
 
 SourceStrategy = Union[GlobalQuery, PerDatabaseQuery, Command]

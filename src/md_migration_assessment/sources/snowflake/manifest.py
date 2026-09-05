@@ -116,19 +116,32 @@ def _ex(
       ``account_usage_view`` names the view read when it differs from the
       extract name (M3c aggregates all read QUERY_HISTORY).
     - ``info_schema_sql``: per-database walk, any profile.
+
+    Both SHOW and INFORMATION_SCHEMA list only objects the collecting role
+    has privileges on, so they are ``visibility_bound``: complete extracts
+    are lower bounds and the runner/report disclose that. ACCOUNT_USAGE is
+    account-wide once granted and is not.
     """
     sources: list = []
     if show_sql:
         if not expected_show_columns:
             raise ValueError(f"{name}: SHOW extract needs expected_show_columns")
-        sources.append(Command(show_sql, tuple(expected_show_columns), SHOW))
+        # SHOW lists only objects the role has privileges on (e.g. SHOW
+        # WAREHOUSES: warehouses the role holds any privilege on)
+        sources.append(Command(
+            show_sql, tuple(expected_show_columns), SHOW, visibility_bound=True,
+        ))
     if account_usage_sql:
         sources.append(GlobalQuery(
             f"account_usage/{account_usage_sql}", ACCOUNT_USAGE,
             min_profile=Profile.STANDARD, source_view=account_usage_view,
         ))
     if info_schema_sql:
-        sources.append(PerDatabaseQuery(f"information_schema/{info_schema_sql}", INFORMATION_SCHEMA))
+        # INFORMATION_SCHEMA shows objects the role has privileges on
+        sources.append(PerDatabaseQuery(
+            f"information_schema/{info_schema_sql}", INFORMATION_SCHEMA,
+            visibility_bound=True,
+        ))
     return Extractor(
         name=name,
         category=category,

@@ -134,8 +134,9 @@ grant matches exactly what the collector reads. In practice there are three
 meaningful tiers:
 
 ```sql
--- Useful floor: complete account-wide inventory + storage and spend history.
--- Sizes the estate and the bill, but says nothing about what actually runs.
+-- Useful floor: account-wide catalog inventory + storage and spend history
+-- from ACCOUNT_USAGE. Sizes the estate and the bill, but says nothing
+-- about what actually runs.
 GRANT DATABASE ROLE SNOWFLAKE.OBJECT_VIEWER TO ROLE md_assess;
 GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER  TO ROLE md_assess;
 
@@ -162,7 +163,7 @@ Enterprise edition regardless of role.
 ### Quick path: one grant
 
 If a granular grant is impractical for the evaluation, one statement covers
-every extractor:
+every ACCOUNT_USAGE extractor:
 
 ```sql
 GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE md_assess;
@@ -173,6 +174,24 @@ This is equivalent to all of the built-in viewer roles above at once, plus the
 views, which the tool never reads. It grants no access to any of your own
 databases or tables. Choose it to get started quickly; choose the tiered roles
 above when your security team wants the grant to match exactly what is read.
+
+### Role visibility: what no grant on `SNOWFLAKE` covers
+
+Neither path affects the SHOW-based inventories (warehouses, streams, dynamic
+tables, integrations, alerts, and the other rows marked `SHOW` in the matrix
+below) or the INFORMATION_SCHEMA walks used by `lite`. Those list only objects
+the collecting role has some privilege on, and Snowflake gives no way to detect
+what the role cannot see. So for those extracts a `complete` status means
+"complete for what this role can see": counts are lower bounds, and a zero may
+mean missing grants rather than absence. The collector says so in
+`meta.extract_runs.error_detail`, and every affected `report.feature_inventory`
+row carries a note.
+
+To make those inventories account-wide, run the collection as a role with broad
+object visibility — for warehouses that means `MONITOR` or `USAGE` on each
+warehouse (or `MANAGE WAREHOUSES`), and for schema-level objects `USAGE` on the
+databases and schemas that hold them. A role such as `SYSADMIN` typically has
+this already; a purpose-built `md_assess` role usually does not.
 
 ## License
 
@@ -222,7 +241,8 @@ To grant less, start from the tiered recommendation in
 extractor needs. Extractors whose grants are
 withheld degrade to `unavailable` rows in `meta.extract_runs` naming the
 missing privilege; the collection stays valid. SHOW-command extracts run with
-any role and report the objects that role can see.
+any role and report only the objects that role can see (see
+[Role visibility](#role-visibility-what-no-grant-on-snowflake-covers) above).
 
 | Extractor | Profile | Source | Minimal privilege | Min edition |
 |---|---|---|---|---|
