@@ -226,6 +226,15 @@ def report(
         typer.echo(f"  source={kind} deployment={deployment} profile={profile} mode={mode}")
         typer.echo(f"  started={started} finished={finished}\n")
 
+        # Which extracts list only what the role can see, from the adapter's
+        # manifest (structural, not note-text matching).
+        try:
+            from .report import visibility_bound_labels
+
+            bound = visibility_bound_labels(get_adapter(kind))
+        except ValueError:
+            bound = {}
+
         rows = con.execute(
             """
             SELECT extractor, status, coalesce(source_used, '-'),
@@ -239,8 +248,12 @@ def report(
             [str(cid)],
         ).fetchall()
         w = max(len(r[0]) for r in rows)
+        n_bound = 0
         for name, status, src, n, detail in rows:
             line = f"  {name:<{w}}  {status:<13} {src:<20} {n:>10,} rows"
+            if src in bound.get(name, ()) and status in ("complete", "partial"):
+                line += "  (role-visible only)"
+                n_bound += 1
             if detail and status != "complete":
                 line += f"  — {detail[:100]}"
             typer.echo(line)
@@ -248,6 +261,14 @@ def report(
             "\nStatuses: complete/partial/unavailable/failed/not_requested. "
             "Missing evidence is never an observed zero — see meta.gaps."
         )
+        if n_bound:
+            typer.echo(
+                f"\nWARNING: {n_bound} extract(s) marked (role-visible only) list "
+                "only objects the collecting role has a privilege on. Their "
+                "counts are lower bounds and a zero is reported as unknown, "
+                "not as absence. To make them account-wide, collect as a role "
+                "that can see the objects (e.g. one holding MANAGE GRANTS)."
+            )
 
         has_features = con.execute(
             "SELECT count(*) FROM information_schema.tables "
@@ -256,26 +277,39 @@ def report(
         if has_features:
             observed = con.execute(
                 """
-                SELECT category, feature, count FROM report.feature_inventory
+                SELECT category, feature, count, lower_bound
+                FROM report.feature_inventory
                 WHERE collection_id = ? AND observation_status = 'observed'
                 ORDER BY category, count DESC
                 """,
                 [str(cid)],
             ).fetchall()
-            unknown = con.execute(
-                "SELECT count(*) FROM report.feature_inventory "
-                "WHERE collection_id = ? AND observation_status = 'unknown'",
+            unknown, unknown_visibility = con.execute(
+                """
+                SELECT count(*),
+                       count(*) FILTER (WHERE extract_status = 'complete'
+                                        AND source_extractor <> '(not implemented)')
+                FROM report.feature_inventory
+                WHERE collection_id = ? AND observation_status = 'unknown'
+                """,
                 [str(cid)],
-            ).fetchone()[0]
+            ).fetchone()
             typer.echo("\nfeatures observed (facts only — no compatibility judgments):")
             if not observed:
                 typer.echo("  none")
-            for category, feature, n in observed:
-                typer.echo(f"  {category:<14} {feature:<32} {n:>8,}")
+            for category, feature, n, lower in observed:
+                mark = "  (lower bound)" if lower else ""
+                typer.echo(f"  {category:<14} {feature:<32} {n:>8,}{mark}")
             if unknown:
+                why = "source extracts incomplete"
+                if unknown_visibility:
+                    why += (
+                        f", or nothing visible to the collecting role "
+                        f"({unknown_visibility} of them)"
+                    )
                 typer.echo(
-                    f"  ({unknown} features unknown — source extracts incomplete; "
-                    "see report.feature_inventory)"
+                    f"  ({unknown} features unknown — {why}; "
+                    "see report.feature_inventory.note)"
                 )
     finally:
         con.close()

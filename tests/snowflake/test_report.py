@@ -258,13 +258,22 @@ def test_show_based_signals_carry_lower_bound_and_grant_caveats(out_db):
     empty_streamlits = REALISTIC_SHOW["streamlit_apps"].schema.empty_table()
     source = realistic_source()
     source.show_data["streamlit_apps"] = empty_streamlits
-    _, feats = collect_and_report(out_db, source)
-    # observed via SHOW: lower bound, still 'observed'
+    coll, feats = collect_and_report(out_db, source)
+    lower = dict(out_db.execute(
+        "SELECT feature, lower_bound FROM report.feature_inventory WHERE collection_id = ?",
+        [str(coll.collection_id)],
+    ).fetchall())
+    # observed via SHOW: still 'observed', structurally a lower bound
     assert feats["warehouses"]["status"] == "observed"
+    assert lower["warehouses"] is True
     assert "lower bound" in feats["warehouses"]["note"]
-    # zero via SHOW: observed_zero with the grant caveat
-    assert feats["streamlit_apps"]["status"] == "observed_zero"
-    assert "missing grants" in feats["streamlit_apps"]["note"]
+    # zero via SHOW: unknown with a null count, never an observed zero
+    assert feats["streamlit_apps"]["status"] == "unknown"
+    assert feats["streamlit_apps"]["count"] is None
+    assert "cannot be confirmed" in feats["streamlit_apps"]["note"]
     # ACCOUNT_USAGE-sourced signals are unaffected
     assert feats["transient_tables"]["status"] == "observed"
+    assert lower["transient_tables"] is False
     assert feats["transient_tables"]["note"] is None
+    # (an ACCOUNT_USAGE zero staying observed_zero is covered by
+    # test_observed_zero_requires_complete_coverage)

@@ -182,16 +182,26 @@ tables, integrations, alerts, and the other rows marked `SHOW` in the matrix
 below) or the INFORMATION_SCHEMA walks used by `lite`. Those list only objects
 the collecting role has some privilege on, and Snowflake gives no way to detect
 what the role cannot see. So for those extracts a `complete` status means
-"complete for what this role can see": counts are lower bounds, and a zero may
-mean missing grants rather than absence. The collector says so in
-`meta.extract_runs.error_detail`, and every affected `report.feature_inventory`
-row carries a note.
+"complete for what this role can see", and the tool records that structurally:
+`meta.extract_runs.error_detail` says the extract is role-visibility bound;
+`md-assess report` marks the extract `(role-visible only)` and warns; in
+`report.feature_inventory`, a positive count is `observed` with
+`lower_bound = true`, and a zero is `unknown` with a null count rather than an
+observed zero, because absence cannot be confirmed.
 
-To make those inventories account-wide, run the collection as a role with broad
-object visibility — for warehouses that means `MONITOR` or `USAGE` on each
-warehouse (or `MANAGE WAREHOUSES`), and for schema-level objects `USAGE` on the
-databases and schemas that hold them. A role such as `SYSADMIN` typically has
-this already; a purpose-built `md_assess` role usually does not.
+There is no generic grant recipe that makes these inventories account-wide.
+`USAGE` on the parent database and schema is necessary but not sufficient: SHOW
+also requires a privilege on each contained object (Snowflake documents `SHOW
+STREAMS`, for example, as returning only streams the role has an access
+privilege on), and the required privilege differs by object type. Two workable
+options:
+
+- Run the collection under a governed administrative role that already holds
+  the account-level `MANAGE GRANTS` privilege, which gives account-wide SHOW
+  visibility (`SECURITYADMIN` has it by default). `MANAGE GRANTS` is powerful,
+  so use an existing role for the run rather than granting it to `md_assess`.
+- Accept the lower bounds. The report marks them, and CE can follow up on the
+  specific inventories that matter for the assessment.
 
 ## License
 

@@ -22,12 +22,15 @@ observed, and missing evidence is never presented as zero:
 - ``not_requested``  — the collection profile did not include the source
 
 Visibility-bound sources (strategies flagged ``visibility_bound``, e.g. a
-listing that shows only objects the collecting role can see) keep these
-statuses but every row carries a note: an ``observed`` count is a lower
-bound, and an ``observed_zero`` may be a grant gap rather than absence.
-Downgrading such zeros to ``unknown`` was considered and rejected: most
-deployments genuinely have none of many inventoried object kinds, and the
-inventory would drown in unknowns. The note is the honest middle.
+listing that shows only objects the collecting role can see) cannot prove
+absence, so the contract applies structurally, not in prose:
+
+- a positive count is ``observed`` with ``lower_bound = true`` (the column
+  is also true under ``partial`` coverage);
+- a zero is ``unknown`` with ``count = NULL`` — a role-visibility gap is
+  missing evidence, and missing evidence is never presented as zero, even
+  though many deployments genuinely have none of these objects. The note
+  says how to resolve it (collect as a role that can see the objects).
 """
 
 from __future__ import annotations
@@ -38,12 +41,34 @@ from .. import db
 from ..sources import get_adapter
 from .facts import table_exists
 
-__all__ = ["build_report", "table_exists"]
+__all__ = ["build_report", "table_exists", "visibility_bound_labels"]
 
 
 def _join(*parts: str | None) -> str | None:
     kept = [p for p in parts if p]
     return "; ".join(kept) if kept else None
+
+
+def visibility_bound_labels(adapter) -> dict[str, set[str]]:
+    """extractor name -> the ``source_used`` labels of its strategies that
+    list only what the collecting role can see. Derived from the manifest,
+    so report and CLI agree without matching on note text."""
+    return {
+        ex.name: {s.label for s in ex.sources if getattr(s, "visibility_bound", False)}
+        for ex in adapter.extractors
+    }
+
+
+VISIBILITY_UNKNOWN_NOTE = (
+    "no objects visible to the collecting role: the source lists only "
+    "objects the role has a privilege on, so absence cannot be confirmed; "
+    "collect as a role that can see these objects (e.g. one with MANAGE "
+    "GRANTS) to resolve"
+)
+VISIBILITY_LOWER_BOUND_NOTE = (
+    "source lists only objects visible to the collecting role — count is a "
+    "lower bound"
+)
 
 _FEATURE_DDL = """
 CREATE SCHEMA IF NOT EXISTS report;
@@ -58,6 +83,9 @@ CREATE TABLE report.feature_inventory (
     source_extractor   VARCHAR NOT NULL,
     extract_status     VARCHAR,
     source_used        VARCHAR,
+    -- true when the count cannot be exhaustive: partial coverage, or a
+    -- source that lists only what the collecting role can see
+    lower_bound        BOOLEAN NOT NULL,
     note               VARCHAR
 );
 """
@@ -89,11 +117,7 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
     con.execute(_FEATURE_DDL)
     summary = {"collections": len(collections), "features": 0, "unknown": 0}
 
-    # source_used label -> whether that strategy is visibility-bound, per extractor
-    bound_labels: dict[str, set[str]] = {
-        ex.name: {s.label for s in ex.sources if getattr(s, "visibility_bound", False)}
-        for ex in (adapter.extractors if adapter else [])
-    }
+    bound_labels = visibility_bound_labels(adapter) if adapter else {}
 
     for cid, _, _ in collections:
         runs = {
@@ -109,6 +133,7 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
             count: int | None = None
             samples: list[str] = []
             note: str | None = None
+            lower_bound = False
 
             if run is None:
                 obs = "unknown"
@@ -129,21 +154,17 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                         obs = "observed"
                         if run["status"] == "partial":
                             note = "source coverage partial — count is a lower bound"
+                            lower_bound = True
                         if bound:
-                            note = _join(
-                                note,
-                                "source lists only objects visible to the "
-                                "collecting role — count is a lower bound",
-                            )
-                    elif run["status"] == "complete":
+                            note = _join(note, VISIBILITY_LOWER_BOUND_NOTE)
+                            lower_bound = True
+                    elif run["status"] == "complete" and not bound:
                         obs = "observed_zero"
-                        if bound:
-                            note = (
-                                "zero under role visibility: the source lists "
-                                "only objects the collecting role can see, so "
-                                "this may reflect missing grants rather than "
-                                "absence"
-                            )
+                    elif run["status"] == "complete":
+                        # zero under role visibility is missing evidence
+                        obs = "unknown"
+                        count = None
+                        note = VISIBILITY_UNKNOWN_NOTE
                     else:
                         obs = "unknown"
                         count = None
@@ -158,7 +179,7 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
 
             con.execute(
                 "INSERT INTO report.feature_inventory VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     cid,
                     sig.category,
@@ -169,6 +190,7 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                     sig.source_extractor,
                     run["status"] if run else None,
                     run["source_used"] if run else None,
+                    lower_bound,
                     note,
                 ],
             )
@@ -181,7 +203,7 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
         for planned in adapter.planned_signals:
             con.execute(
                 "INSERT INTO report.feature_inventory VALUES "
-                "(?, ?, ?, 'unknown', NULL, [], '(not implemented)', NULL, NULL, ?)",
+                "(?, ?, ?, 'unknown', NULL, [], '(not implemented)', NULL, NULL, false, ?)",
                 [cid, planned.category, planned.name,
                  f"signal not implemented in this version: {planned.reason}"],
             )

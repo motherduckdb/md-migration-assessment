@@ -539,15 +539,22 @@ def test_visibility_bound_command_is_disclosed_in_coverage_and_report(out_db):
     assert st["things"]["status"] == "complete" and st["things"]["error_detail"] is None
 
     build_report(out_db)
-    notes = dict(out_db.execute(
-        "SELECT feature, note FROM report.feature_inventory"
-    ).fetchall())
-    assert "visible to the collecting role" in notes["mint_gizmos"]
-    assert "lower bound" in notes["mint_gizmos"]
-    assert notes["spicy_things"] is None
+    rows = {
+        r[0]: r[1:] for r in out_db.execute(
+            "SELECT feature, observation_status, lower_bound, note FROM report.feature_inventory"
+        ).fetchall()
+    }
+    # structural: lower_bound column, not just prose
+    assert rows["mint_gizmos"][:2] == ("observed", True)
+    assert "visible to the collecting role" in rows["mint_gizmos"][2]
+    assert rows["spicy_things"][:2] == ("observed", False)
+    assert rows["spicy_things"][2] is None
+    assert rows["unicorns"][1] is False  # planned signals are not lower bounds
 
 
-def test_visibility_bound_zero_is_observed_zero_with_a_grant_caveat(out_db):
+def test_visibility_bound_zero_is_unknown_never_zero(out_db):
+    """Review round 2 (P1): a zero from a source that lists only what the role
+    can see is missing evidence — never an observed zero, even in prose."""
     empty = pa.table({
         "name": pa.array([], pa.string()), "db_name": pa.array([], pa.string()),
         "schema_name": pa.array([], pa.string()), "flavor": pa.array([], pa.string()),
@@ -556,13 +563,35 @@ def test_visibility_bound_zero_is_observed_zero_with_a_grant_caveat(out_db):
         out_db, ADAPTER, FakeConnection(command_data={"gizmos": empty}),
         profile=Profile.STANDARD,
     )
-    build_report(out_db)
-    status, count, note = out_db.execute(
-        "SELECT observation_status, count, note FROM report.feature_inventory "
+    summary = build_report(out_db)
+    status, count, lower, note = out_db.execute(
+        "SELECT observation_status, count, lower_bound, note FROM report.feature_inventory "
         "WHERE feature = 'mint_gizmos'"
     ).fetchone()
-    assert status == "observed_zero" and count == 0
-    assert "missing grants" in note
+    assert status == "unknown" and count is None and lower is False
+    assert "cannot be confirmed" in note and "MANAGE GRANTS" in note
+    assert summary["unknown"] == 2  # mint_gizmos + the planned unicorns
+
+
+def test_cli_report_surfaces_visibility_bound_extracts(tmp_path):
+    """Review round 2 (P1): the normal CLI path must show the disclosure."""
+    from typer.testing import CliRunner
+
+    from md_migration_assessment.cli import app
+
+    path = str(tmp_path / "fake.duckdb")
+    con = open_output(path)
+    run_collection(con, ADAPTER, FakeConnection(), profile=Profile.STANDARD)
+    build_report(con)
+    con.close()
+    out = CliRunner().invoke(app, ["report", "--db", path]).output
+    gizmo_line = next(l for l in out.splitlines() if l.strip().startswith("gizmos"))
+    assert "(role-visible only)" in gizmo_line
+    assert "WARNING: 1 extract(s) marked (role-visible only)" in out
+    feat_line = next(l for l in out.splitlines() if "mint_gizmos" in l)
+    assert "(lower bound)" in feat_line
+    things_line = next(l for l in out.splitlines() if l.strip().startswith("things"))
+    assert "(role-visible only)" not in things_line
 
 
 def test_visibility_note_composes_with_scope_and_truncation_notes(out_db):
