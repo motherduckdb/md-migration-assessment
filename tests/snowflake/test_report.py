@@ -187,6 +187,10 @@ def test_probe_error_is_unknown_with_note(out_db):
     row = feats["custom_roles"]
     assert row["status"] == "unknown"
     assert "probe failed" in row["note"]
+    reason = out_db.execute(
+        "SELECT unknown_reason FROM report.feature_inventory WHERE feature = 'custom_roles'"
+    ).fetchone()[0]
+    assert reason == "probe_failed"  # not a visibility gap: roles is ACCOUNT_USAGE
 
 
 def test_observed_zero_requires_complete_coverage(out_db):

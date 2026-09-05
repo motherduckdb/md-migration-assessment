@@ -270,10 +270,13 @@ def report(
                 "that can see the objects (e.g. one holding MANAGE GRANTS)."
             )
 
-        has_features = con.execute(
-            "SELECT count(*) FROM information_schema.tables "
-            "WHERE table_schema = 'report' AND table_name = 'feature_inventory'"
-        ).fetchone()[0]
+        from .report import check_report_version
+
+        try:
+            has_features = check_report_version(con, db)
+        except ValueError as exc:
+            typer.echo(f"\n{exc}", err=True)
+            raise typer.Exit(1) from None
         if has_features:
             observed = con.execute(
                 """
@@ -284,16 +287,16 @@ def report(
                 """,
                 [str(cid)],
             ).fetchall()
-            unknown, unknown_visibility = con.execute(
+            by_reason = dict(con.execute(
                 """
-                SELECT count(*),
-                       count(*) FILTER (WHERE extract_status = 'complete'
-                                        AND source_extractor <> '(not implemented)')
+                SELECT coalesce(unknown_reason, 'unspecified'), count(*)
                 FROM report.feature_inventory
                 WHERE collection_id = ? AND observation_status = 'unknown'
+                GROUP BY 1
                 """,
                 [str(cid)],
-            ).fetchone()
+            ).fetchall())
+            unknown = sum(by_reason.values())
             typer.echo("\nfeatures observed (facts only — no compatibility judgments):")
             if not observed:
                 typer.echo("  none")
@@ -301,15 +304,23 @@ def report(
                 mark = "  (lower bound)" if lower else ""
                 typer.echo(f"  {category:<14} {feature:<32} {n:>8,}{mark}")
             if unknown:
-                why = "source extracts incomplete"
-                if unknown_visibility:
-                    why += (
-                        f", or nothing visible to the collecting role "
-                        f"({unknown_visibility} of them)"
-                    )
+                phrases = {
+                    "not_visible": "nothing visible to the collecting role",
+                    "extract_unavailable": "source extract unavailable",
+                    "extract_failed": "source extract failed",
+                    "extract_interrupted": "source extract interrupted",
+                    "partial_nothing_observed": "partial coverage, nothing observed",
+                    "probe_failed": "report probe failed",
+                    "not_implemented": "signal not implemented",
+                    "extractor_missing": "source extractor missing",
+                }
+                breakdown = ", ".join(
+                    f"{n} {phrases.get(reason, reason)}"
+                    for reason, n in sorted(by_reason.items(), key=lambda kv: -kv[1])
+                )
                 typer.echo(
-                    f"  ({unknown} features unknown — {why}; "
-                    "see report.feature_inventory.note)"
+                    f"  ({unknown} features unknown: {breakdown}; "
+                    "see report.feature_inventory.unknown_reason)"
                 )
     finally:
         con.close()

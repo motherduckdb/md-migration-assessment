@@ -37,16 +37,63 @@ from __future__ import annotations
 
 import duckdb
 
-from .. import db
+from .. import __version__, db
+from ..db import utcnow
 from ..sources import get_adapter
 from .facts import table_exists
 
-__all__ = ["build_report", "table_exists", "visibility_bound_labels"]
+__all__ = [
+    "REPORT_SCHEMA_VERSION",
+    "build_report",
+    "check_report_version",
+    "table_exists",
+    "visibility_bound_labels",
+]
+
+#: Version of the report.* shapes. Bump on any change to a cross-source
+#: relation's columns. Stamped into report.schema_version by build_report and
+#: checked by every reader (CLI report, handoff) before selecting columns.
+#: v1: pre-versioning (v0.1.2 and earlier; no schema_version table).
+#: v2: feature_inventory += lower_bound, unknown_reason.
+REPORT_SCHEMA_VERSION = 2
+
+_VERSION_DDL = """
+CREATE TABLE report.schema_version (
+    report_schema_version INTEGER NOT NULL,
+    tool_version          VARCHAR NOT NULL,
+    built_at              TIMESTAMPTZ NOT NULL
+);
+"""
 
 
 def _join(*parts: str | None) -> str | None:
     kept = [p for p in parts if p]
     return "; ".join(kept) if kept else None
+
+
+def check_report_version(con: duckdb.DuckDBPyConnection, db_path: str = "<db>") -> bool:
+    """Refuse to read report.* built under a different report schema.
+
+    Returns False when no report has been built at all (readers then skip the
+    report sections), True when the stamped version matches, and raises with a
+    rebuild instruction otherwise. A report.feature_inventory without a
+    schema_version table is a v1 report (v0.1.2 and earlier).
+    """
+    if not table_exists(con, "report", "feature_inventory"):
+        return False
+    stored = 1
+    if table_exists(con, "report", "schema_version"):
+        row = con.execute(
+            "SELECT report_schema_version FROM report.schema_version"
+        ).fetchone()
+        stored = row[0] if row else 1
+    if stored != REPORT_SCHEMA_VERSION:
+        raise ValueError(
+            f"report.* in this database was built with report schema v{stored}; "
+            f"this tool reads v{REPORT_SCHEMA_VERSION}. The raw evidence is "
+            f"unaffected — rebuild the report with: md-assess assess --db {db_path}"
+        )
+    return True
 
 
 def visibility_bound_labels(adapter) -> dict[str, set[str]]:
@@ -86,7 +133,12 @@ CREATE TABLE report.feature_inventory (
     -- true when the count cannot be exhaustive: partial coverage, or a
     -- source that lists only what the collecting role can see
     lower_bound        BOOLEAN NOT NULL,
-    note               VARCHAR
+    note               VARCHAR,
+    -- why observation_status is 'unknown' (NULL otherwise):
+    --   extract_unavailable | extract_failed | extract_interrupted |
+    --   partial_nothing_observed | not_visible | probe_failed |
+    --   not_implemented | extractor_missing
+    unknown_reason     VARCHAR
 );
 """
 
@@ -134,10 +186,12 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
             samples: list[str] = []
             note: str | None = None
             lower_bound = False
+            reason: str | None = None
 
             if run is None:
                 obs = "unknown"
                 note = "source extractor not present in this collection"
+                reason = "extractor_missing"
             elif run["status"] == "not_requested":
                 obs = "not_requested"
             elif run["status"] in ("complete", "partial"):
@@ -165,21 +219,25 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                         obs = "unknown"
                         count = None
                         note = VISIBILITY_UNKNOWN_NOTE
+                        reason = "not_visible"
                     else:
                         obs = "unknown"
                         count = None
                         note = "source coverage partial and nothing observed"
+                        reason = "partial_nothing_observed"
                 except Exception as exc:  # noqa: BLE001 — a broken probe is unknown, not zero
                     obs = "unknown"
                     count = None
                     note = f"probe failed: {exc}"
+                    reason = "probe_failed"
             else:  # unavailable | failed | interrupted
                 obs = "unknown"
                 note = f"source extract {run['status']}"
+                reason = f"extract_{run['status']}"
 
             con.execute(
                 "INSERT INTO report.feature_inventory VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     cid,
                     sig.category,
@@ -192,6 +250,7 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                     run["source_used"] if run else None,
                     lower_bound,
                     note,
+                    reason,
                 ],
             )
             summary["features"] += 1
@@ -203,7 +262,8 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
         for planned in adapter.planned_signals:
             con.execute(
                 "INSERT INTO report.feature_inventory VALUES "
-                "(?, ?, ?, 'unknown', NULL, [], '(not implemented)', NULL, NULL, false, ?)",
+                "(?, ?, ?, 'unknown', NULL, [], '(not implemented)', NULL, NULL, false, ?, "
+                "'not_implemented')",
                 [cid, planned.category, planned.name,
                  f"signal not implemented in this version: {planned.reason}"],
             )
@@ -213,4 +273,11 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
     if adapter is not None:
         for build in adapter.fact_builders:
             build(con)
+    # Stamp LAST: a build that dies midway leaves no version row, and readers
+    # then treat the report as stale and ask for a rebuild.
+    con.execute(_VERSION_DDL)
+    con.execute(
+        "INSERT INTO report.schema_version VALUES (?, ?, ?)",
+        [REPORT_SCHEMA_VERSION, __version__, utcnow()],
+    )
     return summary

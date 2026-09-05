@@ -606,3 +606,122 @@ def test_visibility_note_composes_with_scope_and_truncation_notes(out_db):
     row = runs(out_db, coll)["gizmos"]
     assert row["status"] == "partial"
     assert "truncated" in row["error_detail"] and "role-visibility bound" in row["error_detail"]
+
+
+# ── report schema versioning and unknown reasons (review round 3) ─────────
+
+
+def _cli(args):
+    from typer.testing import CliRunner
+
+    from md_migration_assessment.cli import app
+
+    return CliRunner().invoke(app, args)
+
+
+def test_stale_report_schema_is_a_clear_rebuild_error_not_a_binder_error(tmp_path):
+    """P1: a report built by v0.1.2 (no lower_bound/unknown_reason, no
+    schema_version table) must be refused with a rebuild instruction by every
+    reader, and `md-assess assess` must repair it."""
+    path = str(tmp_path / "old.duckdb")
+    con = open_output(path)
+    run_collection(con, ADAPTER, FakeConnection(), profile=Profile.STANDARD)
+    build_report(con)
+    # shape a v0.1.2 report
+    con.execute("ALTER TABLE report.feature_inventory DROP COLUMN lower_bound")
+    con.execute("ALTER TABLE report.feature_inventory DROP COLUMN unknown_reason")
+    con.execute("DROP TABLE report.schema_version")
+    con.close()
+
+    result = _cli(["report", "--db", path])
+    assert result.exit_code == 1
+    assert "report schema v1" in result.output and "md-assess assess --db" in result.output
+    assert "Binder" not in result.output and "lower_bound" not in result.output
+    # coverage (meta) is still printed before the refusal
+    assert "gizmos" in result.output
+
+    with pytest.raises(ValueError, match="md-assess assess"):
+        build_handoff(path, str(tmp_path / "h.duckdb"))
+
+    assert _cli(["assess", "--db", path]).exit_code == 0
+    result = _cli(["report", "--db", path])
+    assert result.exit_code == 0 and "(lower bound)" in result.output
+    con = duckdb.connect(path, read_only=True)
+    try:
+        assert con.execute("SELECT report_schema_version FROM report.schema_version").fetchone()[0] == 2
+    finally:
+        con.close()
+
+
+def test_report_without_version_row_is_treated_as_stale(out_db):
+    run_collection(out_db, ADAPTER, FakeConnection(), profile=Profile.LITE)
+    build_report(out_db)
+    out_db.execute("DELETE FROM report.schema_version")
+    from md_migration_assessment.report import check_report_version
+
+    with pytest.raises(ValueError, match="report schema v1"):
+        check_report_version(out_db)
+    # and no report at all is simply 'nothing to read', not an error
+    out_db.execute("DROP SCHEMA report CASCADE")
+    assert check_report_version(out_db) is False
+
+
+def test_unknown_reason_is_structured_and_cli_does_not_conflate_probe_failures(tmp_path):
+    """P2: a completed extractor whose probe fails is 'probe_failed', not a
+    visibility gap; the CLI must report the two separately."""
+    import dataclasses
+
+    from md_migration_assessment.report.signals import Signal
+    from md_migration_assessment.sources import register
+
+    broken = Signal(
+        name="broken_probe", category="platform", source_extractor="gizmos",
+        sql="SELECT count(*) AS n, [] AS s FROM raw.gizmos WHERE no_such_column = 1 "
+            "AND collection_id = '{cid}'",
+    )
+    variant = dataclasses.replace(ADAPTER, signals=list(ADAPTER.signals) + [broken])
+    register(variant)  # same name: the CLI resolves this one until the fixture unregisters
+    try:
+        empty = pa.table({
+            "name": pa.array([], pa.string()), "db_name": pa.array([], pa.string()),
+            "schema_name": pa.array([], pa.string()), "flavor": pa.array([], pa.string()),
+        })
+        path = str(tmp_path / "fake.duckdb")
+        con = open_output(path)
+        run_collection(con, variant, FakeConnection(command_data={"gizmos": empty}),
+                       profile=Profile.STANDARD)
+        build_report(con)
+        reasons = dict(con.execute(
+            "SELECT feature, unknown_reason FROM report.feature_inventory "
+            "WHERE observation_status = 'unknown'"
+        ).fetchall())
+        con.close()
+        assert reasons == {
+            "mint_gizmos": "not_visible",     # zero from a visibility-bound source
+            "broken_probe": "probe_failed",   # complete extractor, broken probe
+            "unicorns": "not_implemented",
+        }
+        out = _cli(["report", "--db", path]).output
+        line = next(l for l in out.splitlines() if "features unknown" in l)
+        assert "1 nothing visible to the collecting role" in line
+        assert "1 report probe failed" in line
+        assert "1 signal not implemented" in line
+    finally:
+        register(ADAPTER)
+
+
+def test_unknown_reason_covers_extract_statuses(out_db):
+    conn = FakeConnection(global_data={"widget_sizes": KeyboardInterrupt()})
+    with pytest.raises(KeyboardInterrupt):
+        run_collection(out_db, ADAPTER, conn, profile=Profile.STANDARD)
+    build_report(out_db)
+    reasons = dict(out_db.execute(
+        "SELECT feature, unknown_reason FROM report.feature_inventory "
+        "WHERE observation_status = 'unknown'"
+    ).fetchall())
+    assert reasons["mint_gizmos"] == "extract_interrupted"
+    # observed rows carry no reason
+    assert out_db.execute(
+        "SELECT count(*) FROM report.feature_inventory "
+        "WHERE observation_status <> 'unknown' AND unknown_reason IS NOT NULL"
+    ).fetchone()[0] == 0
