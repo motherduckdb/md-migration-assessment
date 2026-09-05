@@ -9,7 +9,10 @@ silently omitted (spec §2).
 Status semantics:
 
 - ``not_requested``: the chosen profile does not include this extractor.
-- ``complete``: the extract covered its full requested scope.
+- ``complete``: the extract covered its full requested scope. For a
+  visibility-bound strategy (a listing that shows only what the role can
+  see) "scope" means the role's visibility; ``error_detail`` says so and
+  the report treats counts as lower bounds.
 - ``partial``: a per-database walk succeeded for some databases and failed
   for others (``actual_scope`` lists coverage), or a command's output was
   truncated by the server.
@@ -138,6 +141,22 @@ def _render(
             "{database_literal}", literal
         )
     return out
+
+
+#: Recorded in meta.extract_runs.error_detail whenever a visibility-bound
+#: strategy succeeds: the extract is complete with respect to what the role
+#: can see, which is not the same as the deployment. The report layer turns
+#: this into per-row notes (see report/__init__.py).
+VISIBILITY_NOTE = (
+    "role-visibility bound: lists only objects the collecting role has "
+    "privileges on; objects it cannot see are undetectable, so counts are "
+    "lower bounds and zero is not proof of absence"
+)
+
+
+def _join_notes(*parts: str | None) -> str | None:
+    kept = [p for p in parts if p]
+    return "; ".join(kept) if kept else None
 
 
 #: Columns stamped onto every raw row by the framework rather than produced
@@ -593,17 +612,19 @@ def _run_command(
         run.rows_written = ing.finish()
         run.source_used = strategy.label
         run.actual_scope = achieved_scope
+        visibility = VISIBILITY_NOTE if strategy.visibility_bound else None
         if truncated:
             run.status = "partial"
             run.error_category = "error"
-            run.error_detail = (
+            run.error_detail = _join_notes(
                 "command output truncated at the server-side row cap — "
-                "inventory may be incomplete"
+                "inventory may be incomplete",
+                visibility,
             )
             run.retryable = False
         else:
             run.status = "complete"
-            run.error_detail = scope_note
+            run.error_detail = _join_notes(scope_note, visibility)
     except Exception as exc:  # noqa: BLE001
         kind = adapter.classify_error(exc)
         run.status = kind if kind == "unavailable" else "failed"
@@ -683,10 +704,14 @@ def _run_per_database(
     run.rows_written = ing.finish()
     run.source_used = strategy.label
     run.actual_scope = succeeded
+    visibility = VISIBILITY_NOTE if strategy.visibility_bound else None
     if failures and succeeded:
         run.status = "partial"
         run.error_category = "privilege" if privilege_only else "error"
-        run.error_detail = "some databases could not be read: " + "; ".join(failures[:5])
+        run.error_detail = _join_notes(
+            "some databases could not be read: " + "; ".join(failures[:5]),
+            visibility,
+        )
         run.retryable = True
     elif failures:
         run.status = "failed"
@@ -695,7 +720,9 @@ def _run_per_database(
         run.retryable = True
     else:
         run.status = "complete"
-        run.error_detail = _fallback_note(unavailable_before, strategy.label)
+        run.error_detail = _join_notes(
+            _fallback_note(unavailable_before, strategy.label), visibility
+        )
     return None
 
 

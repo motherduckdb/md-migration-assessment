@@ -197,6 +197,12 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
                     "Re-collect with the current version."
                 )
 
+        # A report built by an older tool version has a different shape; the
+        # raw evidence is fine, so ask for a rebuild rather than shipping it.
+        from .report import check_report_version
+
+        check_report_version(con, source_path)
+
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".meta')
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".raw')
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".report')

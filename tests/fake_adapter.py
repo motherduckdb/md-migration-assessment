@@ -97,7 +97,10 @@ EXTRACTORS: list[Extractor] = [
         name="gizmos",
         category="features",
         min_profile=Profile.LITE,
-        sources=(Command("LIST GIZMOS", ("name", "db_name", "schema_name", "flavor"), "list"),),
+        sources=(Command(
+            "LIST GIZMOS", ("name", "db_name", "schema_name", "flavor"), "list",
+            visibility_bound=True,
+        ),),
         scope_columns={"database": "db_name", "schema": "schema_name"},
         required_privilege="any role",
         sensitive_fields={

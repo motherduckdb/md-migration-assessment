@@ -187,6 +187,10 @@ def test_probe_error_is_unknown_with_note(out_db):
     row = feats["custom_roles"]
     assert row["status"] == "unknown"
     assert "probe failed" in row["note"]
+    reason = out_db.execute(
+        "SELECT unknown_reason FROM report.feature_inventory WHERE feature = 'custom_roles'"
+    ).fetchone()[0]
+    assert reason == "probe_failed"  # not a visibility gap: roles is ACCOUNT_USAGE
 
 
 def test_observed_zero_requires_complete_coverage(out_db):
@@ -224,3 +228,56 @@ def test_sizing_built_with_system_flag_and_storage_join(out_db):
     assert by_name["PLAIN"][1] is False
     assert by_name["PLAIN"][2] == 1000  # storage metrics joined
     assert "MV_T" in by_name  # materialized views included in sizing
+
+
+# ── role visibility (review finding, 2026-09-04) ─────────────────────────
+
+
+def test_show_and_information_schema_extracts_disclose_role_visibility(out_db):
+    """SHOW and INFORMATION_SCHEMA list only what the role can see; a complete
+    extract must say so, and ACCOUNT_USAGE extracts must not."""
+    coll = run_collection(out_db, SNOWFLAKE, realistic_source(), profile=Profile.STANDARD)
+    rows = dict(out_db.execute(
+        "SELECT extractor, error_detail FROM meta.extract_runs WHERE collection_id = ?",
+        [str(coll.collection_id)],
+    ).fetchall())
+    assert "role-visibility bound" in rows["warehouses"]          # SHOW
+    assert "role-visibility bound" in rows["streams"]             # SHOW
+    assert rows["tables"] is None                                 # ACCOUNT_USAGE
+    assert rows["warehouse_metering_history"] is None             # ACCOUNT_USAGE
+
+    # lite: the INFORMATION_SCHEMA walk is visibility-bound too
+    out_db.execute("DELETE FROM meta.collections"); out_db.execute("DELETE FROM meta.extract_runs")
+    coll = run_collection(out_db, SNOWFLAKE, realistic_source(), profile=Profile.LITE)
+    detail = out_db.execute(
+        "SELECT error_detail FROM meta.extract_runs WHERE collection_id = ? AND extractor = 'tables'",
+        [str(coll.collection_id)],
+    ).fetchone()[0]
+    assert "role-visibility bound" in detail
+
+
+def test_show_based_signals_carry_lower_bound_and_grant_caveats(out_db):
+    import pyarrow as pa
+
+    empty_streamlits = REALISTIC_SHOW["streamlit_apps"].schema.empty_table()
+    source = realistic_source()
+    source.show_data["streamlit_apps"] = empty_streamlits
+    coll, feats = collect_and_report(out_db, source)
+    lower = dict(out_db.execute(
+        "SELECT feature, lower_bound FROM report.feature_inventory WHERE collection_id = ?",
+        [str(coll.collection_id)],
+    ).fetchall())
+    # observed via SHOW: still 'observed', structurally a lower bound
+    assert feats["warehouses"]["status"] == "observed"
+    assert lower["warehouses"] is True
+    assert "lower bound" in feats["warehouses"]["note"]
+    # zero via SHOW: unknown with a null count, never an observed zero
+    assert feats["streamlit_apps"]["status"] == "unknown"
+    assert feats["streamlit_apps"]["count"] is None
+    assert "cannot be confirmed" in feats["streamlit_apps"]["note"]
+    # ACCOUNT_USAGE-sourced signals are unaffected
+    assert feats["transient_tables"]["status"] == "observed"
+    assert lower["transient_tables"] is False
+    assert feats["transient_tables"]["note"] is None
+    # (an ACCOUNT_USAGE zero staying observed_zero is covered by
+    # test_observed_zero_requires_complete_coverage)

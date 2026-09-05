@@ -20,17 +20,102 @@ observed, and missing evidence is never presented as zero:
 - ``unknown``        — the source extract was unavailable/failed/partial-empty,
                        or the probe itself errored
 - ``not_requested``  — the collection profile did not include the source
+
+Visibility-bound sources (strategies flagged ``visibility_bound``, e.g. a
+listing that shows only objects the collecting role can see) cannot prove
+absence, so the contract applies structurally, not in prose:
+
+- a positive count is ``observed`` with ``lower_bound = true`` (the column
+  is also true under ``partial`` coverage);
+- a zero is ``unknown`` with ``count = NULL`` — a role-visibility gap is
+  missing evidence, and missing evidence is never presented as zero, even
+  though many deployments genuinely have none of these objects. The note
+  says how to resolve it (collect as a role that can see the objects).
 """
 
 from __future__ import annotations
 
 import duckdb
 
-from .. import db
+from .. import __version__, db
+from ..db import utcnow
 from ..sources import get_adapter
 from .facts import table_exists
 
-__all__ = ["build_report", "table_exists"]
+__all__ = [
+    "REPORT_SCHEMA_VERSION",
+    "build_report",
+    "check_report_version",
+    "table_exists",
+    "visibility_bound_labels",
+]
+
+#: Version of the report.* shapes. Bump on any change to a cross-source
+#: relation's columns. Stamped into report.schema_version by build_report and
+#: checked by every reader (CLI report, handoff) before selecting columns.
+#: v1: pre-versioning (v0.1.2 and earlier; no schema_version table).
+#: v2: feature_inventory += lower_bound, unknown_reason.
+REPORT_SCHEMA_VERSION = 2
+
+_VERSION_DDL = """
+CREATE TABLE report.schema_version (
+    report_schema_version INTEGER NOT NULL,
+    tool_version          VARCHAR NOT NULL,
+    built_at              TIMESTAMPTZ NOT NULL
+);
+"""
+
+
+def _join(*parts: str | None) -> str | None:
+    kept = [p for p in parts if p]
+    return "; ".join(kept) if kept else None
+
+
+def check_report_version(con: duckdb.DuckDBPyConnection, db_path: str = "<db>") -> bool:
+    """Refuse to read report.* built under a different report schema.
+
+    Returns False when no report has been built at all (readers then skip the
+    report sections), True when the stamped version matches, and raises with a
+    rebuild instruction otherwise. A report.feature_inventory without a
+    schema_version table is a v1 report (v0.1.2 and earlier).
+    """
+    if not table_exists(con, "report", "feature_inventory"):
+        return False
+    stored = 1
+    if table_exists(con, "report", "schema_version"):
+        row = con.execute(
+            "SELECT report_schema_version FROM report.schema_version"
+        ).fetchone()
+        stored = row[0] if row else 1
+    if stored != REPORT_SCHEMA_VERSION:
+        raise ValueError(
+            f"report.* in this database was built with report schema v{stored}; "
+            f"this tool reads v{REPORT_SCHEMA_VERSION}. The raw evidence is "
+            f"unaffected — rebuild the report with: md-assess assess --db {db_path}"
+        )
+    return True
+
+
+def visibility_bound_labels(adapter) -> dict[str, set[str]]:
+    """extractor name -> the ``source_used`` labels of its strategies that
+    list only what the collecting role can see. Derived from the manifest,
+    so report and CLI agree without matching on note text."""
+    return {
+        ex.name: {s.label for s in ex.sources if getattr(s, "visibility_bound", False)}
+        for ex in adapter.extractors
+    }
+
+
+VISIBILITY_UNKNOWN_NOTE = (
+    "no objects visible to the collecting role: the source lists only "
+    "objects the role has a privilege on, so absence cannot be confirmed; "
+    "collect as a role that can see these objects (e.g. one with MANAGE "
+    "GRANTS) to resolve"
+)
+VISIBILITY_LOWER_BOUND_NOTE = (
+    "source lists only objects visible to the collecting role — count is a "
+    "lower bound"
+)
 
 _FEATURE_DDL = """
 CREATE SCHEMA IF NOT EXISTS report;
@@ -45,7 +130,15 @@ CREATE TABLE report.feature_inventory (
     source_extractor   VARCHAR NOT NULL,
     extract_status     VARCHAR,
     source_used        VARCHAR,
-    note               VARCHAR
+    -- true when the count cannot be exhaustive: partial coverage, or a
+    -- source that lists only what the collecting role can see
+    lower_bound        BOOLEAN NOT NULL,
+    note               VARCHAR,
+    -- why observation_status is 'unknown' (NULL otherwise):
+    --   extract_unavailable | extract_failed | extract_interrupted |
+    --   partial_nothing_observed | not_visible | probe_failed |
+    --   not_implemented | extractor_missing
+    unknown_reason     VARCHAR
 );
 """
 
@@ -76,6 +169,8 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
     con.execute(_FEATURE_DDL)
     summary = {"collections": len(collections), "features": 0, "unknown": 0}
 
+    bound_labels = visibility_bound_labels(adapter) if adapter else {}
+
     for cid, _, _ in collections:
         runs = {
             r[0]: {"status": r[1], "source_used": r[2]}
@@ -90,10 +185,13 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
             count: int | None = None
             samples: list[str] = []
             note: str | None = None
+            lower_bound = False
+            reason: str | None = None
 
             if run is None:
                 obs = "unknown"
                 note = "source extractor not present in this collection"
+                reason = "extractor_missing"
             elif run["status"] == "not_requested":
                 obs = "not_requested"
             elif run["status"] in ("complete", "partial"):
@@ -103,27 +201,43 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                     ).fetchone()
                     count = int(n)
                     samples = [str(s) for s in (sample_objects or [])]
+                    bound = run["source_used"] in bound_labels.get(
+                        sig.source_extractor, set()
+                    )
                     if count > 0:
                         obs = "observed"
                         if run["status"] == "partial":
                             note = "source coverage partial — count is a lower bound"
-                    elif run["status"] == "complete":
+                            lower_bound = True
+                        if bound:
+                            note = _join(note, VISIBILITY_LOWER_BOUND_NOTE)
+                            lower_bound = True
+                    elif run["status"] == "complete" and not bound:
                         obs = "observed_zero"
+                    elif run["status"] == "complete":
+                        # zero under role visibility is missing evidence
+                        obs = "unknown"
+                        count = None
+                        note = VISIBILITY_UNKNOWN_NOTE
+                        reason = "not_visible"
                     else:
                         obs = "unknown"
                         count = None
                         note = "source coverage partial and nothing observed"
+                        reason = "partial_nothing_observed"
                 except Exception as exc:  # noqa: BLE001 — a broken probe is unknown, not zero
                     obs = "unknown"
                     count = None
                     note = f"probe failed: {exc}"
+                    reason = "probe_failed"
             else:  # unavailable | failed | interrupted
                 obs = "unknown"
                 note = f"source extract {run['status']}"
+                reason = f"extract_{run['status']}"
 
             con.execute(
                 "INSERT INTO report.feature_inventory VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     cid,
                     sig.category,
@@ -134,7 +248,9 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
                     sig.source_extractor,
                     run["status"] if run else None,
                     run["source_used"] if run else None,
+                    lower_bound,
                     note,
+                    reason,
                 ],
             )
             summary["features"] += 1
@@ -146,7 +262,8 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
         for planned in adapter.planned_signals:
             con.execute(
                 "INSERT INTO report.feature_inventory VALUES "
-                "(?, ?, ?, 'unknown', NULL, [], '(not implemented)', NULL, NULL, ?)",
+                "(?, ?, ?, 'unknown', NULL, [], '(not implemented)', NULL, NULL, false, ?, "
+                "'not_implemented')",
                 [cid, planned.category, planned.name,
                  f"signal not implemented in this version: {planned.reason}"],
             )
@@ -156,4 +273,11 @@ def build_report(con: duckdb.DuckDBPyConnection) -> dict:
     if adapter is not None:
         for build in adapter.fact_builders:
             build(con)
+    # Stamp LAST: a build that dies midway leaves no version row, and readers
+    # then treat the report as stale and ask for a rebuild.
+    con.execute(_VERSION_DDL)
+    con.execute(
+        "INSERT INTO report.schema_version VALUES (?, ?, ?)",
+        [REPORT_SCHEMA_VERSION, __version__, utcnow()],
+    )
     return summary
