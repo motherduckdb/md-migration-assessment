@@ -1,7 +1,8 @@
-"""Sanitized handoff database builder (spec §4).
+"""Reduced handoff database builder.
 
-Builds a separate database safe to share: meta coverage records, report.*
-facts, and raw evidence filtered by a **fail-closed column policy**:
+Builds a separate database for review before manual sharing: meta coverage
+records, report.* facts, and raw evidence filtered by a **fail-closed column
+policy**:
 
 - a column travels only if the version-controlled extract SQL's SELECT
   projection produces it (framework columns like collection_id excepted);
@@ -14,9 +15,10 @@ Included sensitive classes (object names, user identities, comments) and any
 kept-but-unclassified columns are disclosed in the returned manifest; the
 manifest's drop categories are disjoint.
 
-This is the enforcement point for the privacy classifications in the
-extractor manifest — the classes are behavior here, not documentation.
-M4 adds upload, stronger opt-in flags, and view re-verification on top.
+This is the enforcement point for the privacy classifications in the extractor
+manifest. The output still includes the disclosed sensitive classes above; the
+operator must review the manifest and apply any additional customer-required
+sanitization before sharing it.
 """
 
 from __future__ import annotations
@@ -155,7 +157,7 @@ def _tables(con: duckdb.DuckDBPyConnection, schema: str) -> list[str]:
 
 
 def build_handoff(source_path: str, dest_path: str) -> dict:
-    """Build the sanitized handoff database. Returns its manifest."""
+    """Build the reduced handoff database. Returns its review manifest."""
     require_local_path(source_path, "handoff source")
     require_local_path(dest_path, "handoff destination")
     if not os.path.isfile(source_path):

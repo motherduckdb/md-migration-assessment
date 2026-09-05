@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Cortex/AI feature usage, aggregated per function+model: the current view
 -- (CORTEX_AI_FUNCTIONS_USAGE_HISTORY — the older CORTEX_FUNCTIONS_USAGE_HISTORY
 -- is no longer updated) is per-query and carries user/query attribution the

@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Client/driver inventory aggregated per (user, client type, client version):
 -- which drivers and tools must exist on the MotherDuck side. The source view
 -- carries per-event CLIENT_IP and authentication factors — never selected,

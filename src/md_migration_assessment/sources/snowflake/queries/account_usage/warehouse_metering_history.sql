@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Hourly credit consumption per warehouse: the Snowflake current-state spend
 -- baseline (spec §5.3). One row per warehouse-hour with activity; size scales
 -- with warehouse count, not query volume. {scope_filter} is a no-op here —

@@ -12,8 +12,11 @@ schema, privacy policy, and report contract are shared. **Snowflake is the
 adapter that ships today.** See [Adding a source](#adding-a-source) for what a
 second adapter involves.
 
-**Status: pre-release (M3 complete). Feature inventory and workload facts are
-in; delivery (upload, Dive, Flight) is next. Not yet released for customer use.**
+**Status: Public Preview.** The Snowflake assessment is available to qualified
+prospects and customers with support from MotherDuck. Interfaces and output
+schemas may change before 1.0; use the latest pinned release and re-collect when
+a release notes a schema change. See [Support](SUPPORT.md) and
+[Data handling](docs/DATA_HANDLING.md) before running or sharing an assessment.
 
 ## Supported sources
 
@@ -23,29 +26,32 @@ in; delivery (upload, Dive, Flight) is next. Not yet released for customer use.*
 
 ## Trust model
 
-- **Local/private mode (default):** the collector makes zero network calls except to
-  the source warehouse. No telemetry, no MotherDuck connection. Output is a single
-  local `.duckdb` file (mode `0600`) you can inspect with any DuckDB client.
-- Uploading anything to MotherDuck is a separate, explicit command that builds a
-  sanitized handoff database.
+- **Local/private mode (default):** the collector connects to the source warehouse
+  and does not implement telemetry, a MotherDuck connection, or automatic upload.
+  Output is a single local `.duckdb` file (mode `0600`) you can inspect with any
+  DuckDB client.
+- The separate `handoff` command builds a reduced database for manual sharing. It
+  excludes query text and source bodies, but intentionally retains object names,
+  user/role identities, comments, and tag values. Review its manifest and the
+  [data-handling guide](docs/DATA_HANDLING.md) before sharing it.
 
 ## Quickstart: Snowflake (local mode)
 
-Requires Python 3.10+ and read access to this repository (git authenticates
-with your normal GitHub credentials). Fill in the three `<...>` values, then
-the whole block runs as-is:
+Requires Python 3.10+. Fill in the `<...>` values, then the whole block runs
+as-is. This installs the versioned `v0.1.2` GitHub release asset rather than
+the moving `main` branch:
 
 ```bash
 # 1. Install uv (skip if you already have uv, or see the pip variant below)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Install the collector as a CLI tool, with the Snowflake client extra
-uv tool install "md-migration-assessment[snowflake] @ git+https://github.com/motherduckdb/md-migration-assessment.git"
+uv tool install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.2/md_migration_assessment-0.1.2-py3-none-any.whl"
 
-# 3. Snowflake connection — env vars only, nothing is written to disk
+# 3. Snowflake connection — external-browser SSO is the recommended default
 export SNOWFLAKE_ACCOUNT="<orgname-accountname>"   # e.g. myorg-myaccount
 export SNOWFLAKE_USER="<username>"
-export SNOWFLAKE_PASSWORD="<password>"             # or key pair: see below
+export SNOWFLAKE_AUTHENTICATOR="externalbrowser"
 export SNOWFLAKE_WAREHOUSE="<any_small_warehouse>" # X-Small is enough
 export SNOWFLAKE_ROLE="<role>"                     # optional; omit for default
 
@@ -56,17 +62,18 @@ md-assess report  --db assessment.duckdb
 
 `--source snowflake` is the default and may be omitted.
 
-Key-pair auth instead of a password: set `SNOWFLAKE_PRIVATE_KEY_PATH` (and
-`SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` if the key is encrypted) and skip
-`SNOWFLAKE_PASSWORD`. External browser SSO: set
-`SNOWFLAKE_AUTHENTICATOR=externalbrowser` and skip the password.
+For non-interactive use, key-pair authentication is preferred: unset
+`SNOWFLAKE_AUTHENTICATOR`, set `SNOWFLAKE_PRIVATE_KEY_PATH`, and optionally set
+`SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` for an encrypted key. Password authentication
+is also supported through `SNOWFLAKE_PASSWORD`, but avoid placing passwords in
+shell history or checked-in environment files.
 
 Without uv, any of these work in its place:
 
 ```bash
-pipx install "md-migration-assessment[snowflake] @ git+https://github.com/motherduckdb/md-migration-assessment.git"
+pipx install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.2/md_migration_assessment-0.1.2-py3-none-any.whl"
 # or, into an existing virtualenv:
-pip install "md-migration-assessment[snowflake] @ git+https://github.com/motherduckdb/md-migration-assessment.git"
+pip install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.2/md_migration_assessment-0.1.2-py3-none-any.whl"
 # or, hacking on the repo itself:
 git clone https://github.com/motherduckdb/md-migration-assessment.git
 cd md-migration-assessment && uv run --extra snowflake md-assess --help
@@ -115,15 +122,16 @@ an error.
 
 ## Snowflake privileges
 
-The simple path is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
-A least-privilege matrix (per-extractor Snowflake database roles, edition
+Two ways to grant what the collector reads: the recommended tiered database
+roles below, or a single `IMPORTED PRIVILEGES` grant as a quick path. A
+least-privilege matrix (per-extractor Snowflake database roles, edition
 requirements, and INFORMATION_SCHEMA fallbacks) is at the bottom of this file.
 
 ### Recommended minimum grant
 
-Granting less than `IMPORTED PRIVILEGES`? Use Snowflake's built-in database
-roles on the `SNOWFLAKE` database. In practice there are three meaningful
-tiers:
+Use Snowflake's built-in database roles on the `SNOWFLAKE` database so the
+grant matches exactly what the collector reads. In practice there are three
+meaningful tiers:
 
 ```sql
 -- Useful floor: complete account-wide inventory + storage and spend history.
@@ -150,6 +158,21 @@ Without any of these roles the collector still works in `--profile lite`
 (INFORMATION_SCHEMA + SHOW), but coverage is limited to objects the role
 happens to have privileges on. Note `table_read_heat` also requires
 Enterprise edition regardless of role.
+
+### Quick path: one grant
+
+If a granular grant is impractical for the evaluation, one statement covers
+every extractor:
+
+```sql
+GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE md_assess;
+```
+
+This is equivalent to all of the built-in viewer roles above at once, plus the
+`SNOWFLAKE` database's organization-usage, reader-account, and data-sharing
+views, which the tool never reads. It grants no access to any of your own
+databases or tables. Choose it to get started quickly; choose the tiered roles
+above when your security team wants the grant to match exactly what is read.
 
 ## License
 
@@ -193,7 +216,7 @@ which columns are genuinely common.
 
 ## Snowflake least-privilege matrix
 
-The one-line grant is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
+The quick path is `GRANT IMPORTED PRIVILEGES ON DATABASE SNOWFLAKE TO ROLE <role>`.
 To grant less, start from the tiered recommendation in
 [Snowflake privileges](#snowflake-privileges) above; the matrix below lists what each individual
 extractor needs. Extractors whose grants are

@@ -1,9 +1,9 @@
 """Snowflake feature signals: the public, factual half of the taxonomy.
 
 Each signal is a SQL probe over raw evidence returning an observed count and a
-sample of affected objects. Signals carry NO MotherDuck judgment — ratings and
-effort live in the internal overlay repo (spec decision 14). The signal list is
-ported from google/dwh-migration-tools' snowflake-features scripts
+sample of affected objects. Signals carry no compatibility rating or migration
+effort estimate. The signal list is ported from
+google/dwh-migration-tools' snowflake-features scripts
 (Apache-2.0), adapted to run over collected evidence in DuckDB rather than
 live against Snowflake.
 
@@ -294,7 +294,7 @@ SIGNALS: list[Signal] = [
 
 
 PLANNED_SIGNALS: list[PlannedSignal] = [
-    # Empty as of M3a: the full taxonomy has probes. Add entries here the
-    # moment a new taxonomy item is identified, BEFORE its extract exists —
+    # The current taxonomy has probes. Add entries here the moment a new
+    # taxonomy item is identified, before its extract exists —
     # a signal must never be silently absent from the inventory.
 ]

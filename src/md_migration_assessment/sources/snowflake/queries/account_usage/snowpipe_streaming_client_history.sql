@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Snowpipe Streaming usage, aggregated per client: the raw view is
 -- per-blob-event and unbounded, but feature evidence only needs the client
 -- inventory and volume. Verified live 2026-08-18.

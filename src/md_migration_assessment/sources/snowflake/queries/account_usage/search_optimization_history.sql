@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Search-optimization usage, aggregated per table: the raw view is one row
 -- per maintenance operation, and the report contract counts affected objects,
 -- not events. NOTE: Snowflake documents TABLE_NAME here as an ID-based alias,

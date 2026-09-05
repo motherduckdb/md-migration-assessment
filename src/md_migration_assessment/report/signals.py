@@ -1,10 +1,9 @@
 """Feature-signal model: the public, factual half of the taxonomy.
 
 A signal is a SQL probe over raw evidence returning an observed count and a
-sample of affected objects. Signals carry NO MotherDuck judgment — ratings
-and effort live in the internal overlay repo (spec decision 14). Each source
-adapter ships its own signal list; this module holds the neutral model and
-the probe builder they share.
+sample of affected objects. Signals carry no compatibility rating or migration
+effort estimate. Each source adapter ships its own signal list; this module
+holds the neutral model and the probe builder they share.
 
 Every signal names its source extractor so the report builder can propagate
 observation status from meta.extract_runs: a signal over an extract that was

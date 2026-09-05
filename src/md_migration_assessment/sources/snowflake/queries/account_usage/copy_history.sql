@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Bulk-load evidence aggregated per (table, day, method, outcome): the
 -- authoritative half of the ingestion inventory (spec §3) — COPY INTO and
 -- Snowpipe writes observed from load metadata, not inferred from SQL. The
