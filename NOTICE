@@ -4,7 +4,7 @@ Copyright 2026 MotherDuck
 This product includes software developed at MotherDuck (https://motherduck.com/).
 
 Portions of the Snowflake extraction SQL (column selections in
-src/md_migration_assessment/collect/queries/) are derived from
+src/md_migration_assessment/sources/snowflake/queries/) are derived from
 google/dwh-migration-tools (https://github.com/google/dwh-migration-tools),
 Copyright Google LLC, licensed under the Apache License, Version 2.0.
 Derived files carry an attribution header.

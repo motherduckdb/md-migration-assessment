@@ -183,16 +183,16 @@ def assess(
 @app.command()
 def handoff(
     db: str = typer.Option("assessment.duckdb", help="Assessment database path."),
-    dest: str = typer.Option(..., help="Path for the sanitized handoff database."),
+    dest: str = typer.Option(..., help="Path for the reduced handoff database."),
 ) -> None:
-    """Build a sanitized handoff database (no source bodies, no query text)."""
+    """Build a reduced handoff for review (no source bodies or query text)."""
     import json
 
     from .handoff import build_handoff
 
     manifest = build_handoff(db, dest)
     typer.echo(json.dumps(manifest, indent=2))
-    typer.echo(f"\nsanitized handoff written to {dest} (mode 0600)")
+    typer.echo(f"\nreduced handoff written to {dest} (mode 0600); review before sharing")
 
 
 @app.command()

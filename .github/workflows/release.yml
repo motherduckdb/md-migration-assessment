@@ -1,17 +1,11 @@
-# Release automation: on a version tag, build the sdist + wheel, attach them
-# to the GitHub release (the Flight installs the wheel by direct URL with a
-# --hash pin — spec §7), and publish to PyPI.
-#
-# PyPI publishing is DISABLED for now: the pypi job runs only when the
-# repository variable PUBLISH_TO_PYPI is set to "true" (Settings > Secrets
-# and variables > Actions > Variables). Before enabling it, complete the
-# one-time trusted-publishing setup at
-# https://pypi.org/manage/account/publishing/ — add this repo
-# (motherduckdb/md-migration-assessment), workflow release.yml, environment
-# `pypi`. The release-assets job is separate on purpose so assets attach
-# regardless.
+# Release automation: on a version tag, build the sdist + wheel and attach them
+# to the GitHub release. PyPI publishing is intentionally out of scope for the
+# Public Preview and must be introduced later through a separately reviewed PR.
 
 name: release
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -21,9 +15,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      # setup-uv publishes no floating major tag past v7; pin the exact release
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.22"
       - name: Check tag matches project version
         run: |
           version="$(uv version --short)"
@@ -34,7 +29,7 @@ jobs:
       - run: uv build
       - run: |
           cd dist && sha256sum * > SHA256SUMS
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
@@ -45,28 +40,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: dist/
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           files: dist/*
           generate_release_notes: true
           # PEP 440 pre-release tags (rc/a/b/dev) publish as GitHub prereleases
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'dev') }}
-
-  pypi:
-    needs: build
-    if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write  # trusted publishing
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: dist
-          path: dist/
-      - run: rm dist/SHA256SUMS
-      - uses: pypa/gh-action-pypi-publish@release/v1

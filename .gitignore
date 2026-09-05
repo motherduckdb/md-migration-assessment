@@ -12,5 +12,5 @@ dist/
 .dive-preview/
 *.swp
 
-# spec is MotherDuck-private; lives in the scratchpad, never in this repo
+# local design notes
 md-migration-assessment-SPEC.md

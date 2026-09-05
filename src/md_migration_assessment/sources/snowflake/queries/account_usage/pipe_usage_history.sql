@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Pipe usage aggregated per (pipe, day, kind): credits and volume per named
 -- pipe — pairs with copy_history (per-table) to size the ingestion
 -- re-pointing work. NULL-name rows are Snowflake's hidden auto-refresh pipes

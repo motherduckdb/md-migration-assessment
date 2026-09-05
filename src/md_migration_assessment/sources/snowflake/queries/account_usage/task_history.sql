@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Task runs aggregated per (task, day): scheduled-pipeline cadence evidence.
 -- The source view carries QUERY_TEXT and CONDITION_TEXT per run — neither is
 -- ever selected: task SQL is query text, and this aggregate needs only run

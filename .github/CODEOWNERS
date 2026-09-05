@@ -1,0 +1,9 @@
+# This repository is owned by Customer Engineering.
+* @motherduckdb/customer-eng
+
+# Data handling and release automation are security-sensitive surfaces;
+# listed explicitly so ownership is visible even if the catch-all changes.
+/src/md_migration_assessment/privacy.py @motherduckdb/customer-eng
+/src/md_migration_assessment/handoff.py @motherduckdb/customer-eng
+/src/md_migration_assessment/sources/**/queries/** @motherduckdb/customer-eng
+/.github/workflows/ @motherduckdb/customer-eng

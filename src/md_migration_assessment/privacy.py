@@ -4,13 +4,13 @@ Every raw column that carries customer-sensitive content is declared in the
 extractor manifest with one of these classes. The classification drives:
 
 - local retention policy (what is written to the private database at all),
-- the handoff builder (which fields the default sanitized handoff database
+- the handoff builder (which fields the default reduced handoff database
   excludes), and
-- the manifest printed before any upload.
+- the manifest printed when a handoff is built.
 
 Privacy is a property of each extractor and field, not a delivery feature:
 an extractor may not ship until its sensitive fields are classified and its
-retention behavior is tested (spec §4, "privacy ship gate").
+retention behavior is tested.
 """
 
 from __future__ import annotations
@@ -24,8 +24,7 @@ class PrivacyClass(str, Enum):
     # from the default handoff database.
     SOURCE_BODY = "source_body"
 
-    # Raw SQL text of workload queries. Never retained under the default
-    # --query-text hashed mode; only present under explicit --query-text raw.
+    # Raw SQL text of workload queries. No current collection profile retains it.
     QUERY_TEXT = "query_text"
 
     # Database/schema/table/column identifiers. Retained locally and included
@@ -41,7 +40,7 @@ class PrivacyClass(str, Enum):
     COMMENT = "comment"
 
 
-#: Classes the default sanitized handoff database must exclude entirely.
+#: Classes the default reduced handoff database must exclude entirely.
 HANDOFF_EXCLUDED_CLASSES = frozenset({PrivacyClass.SOURCE_BODY, PrivacyClass.QUERY_TEXT})
 
 #: Classes included in the default handoff but listed in its manifest.

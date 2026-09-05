@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Warehouse load, aggregated to warehouse-hour: the coarse concurrency
 -- profile (spec §3 as amended 2026-08-19 — per-minute peaks are per-query
 -- evidence and deferred to M3c). The source view reports sub-hourly interval

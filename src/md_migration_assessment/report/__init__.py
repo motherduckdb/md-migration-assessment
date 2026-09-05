@@ -1,17 +1,16 @@
-"""The factual report layer (public half of the assessment, spec §5).
+"""The factual report layer.
 
 ``build_report`` materializes ``report.feature_inventory`` for every
 collection in the database, then runs the source adapter's fact builders
-(sizing, workload, spend, ... — each adapter owns its list). Facts only —
-no compatibility ratings, no effort scores; those are applied by the
-internal overlay.
+(sizing, workload, spend, ... — each adapter owns its list). It produces facts
+only, with no compatibility ratings or migration-effort scores.
 
 ``report.feature_inventory`` is the cross-source contract: its shape and
 its observation-status semantics are the same for every adapter. The other
 ``report.*`` relations are adapter-owned until a second source shows which
 columns are genuinely common.
 
-Observation-status contract (spec §5): every feature row states how it was
+Observation-status contract: every feature row states how it was
 observed, and missing evidence is never presented as zero:
 
 - ``observed``       — the source extract succeeded and the count is > 0

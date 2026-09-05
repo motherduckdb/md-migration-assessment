@@ -1,3 +1,4 @@
+-- Column selection informed by google/dwh-migration-tools (Apache-2.0).
 -- Daily credits by service type (WAREHOUSE_METERING, SERVERLESS_TASK,
 -- PIPE, AUTO_CLUSTERING, ...): the account-level spend breakdown that
 -- catches non-warehouse compute the per-warehouse metering view misses.
