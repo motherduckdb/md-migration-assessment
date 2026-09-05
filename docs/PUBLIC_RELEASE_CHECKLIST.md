@@ -44,6 +44,11 @@ follows the visibility change.
       admins to create, update, or delete them. Add the Customer Engineering
       release group as a bypass actor if tags should not require an admin.
 - [ ] Enable immutable GitHub releases if available for the organization.
+- [ ] Leave PyPI publishing gated off (`PUBLISH_TO_PYPI` unset) until a
+      MotherDuck-owned PyPI identity exists with trusted publishing configured
+      for this repo, workflow `release.yml`, environment `pypi`; then create the
+      `pypi` GitHub environment with required reviewers before setting the
+      variable to `true`.
 - [ ] Confirm only the intended teams and administrators have write, maintain,
       or release authority.
 

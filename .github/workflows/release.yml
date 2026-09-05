@@ -1,6 +1,14 @@
 # Release automation: on a version tag, build the sdist + wheel and attach them
-# to the GitHub release. PyPI publishing is intentionally out of scope for the
-# Public Preview and must be introduced later through a separately reviewed PR.
+# to the GitHub release.
+#
+# PyPI publishing is DISABLED for the Public Preview: the pypi job runs only
+# when the repository variable PUBLISH_TO_PYPI is set to "true" (Settings >
+# Secrets and variables > Actions > Variables). Before enabling it, complete
+# the one-time trusted-publishing setup at
+# https://pypi.org/manage/account/publishing/ — add this repo
+# (motherduckdb/md-migration-assessment), workflow release.yml, environment
+# `pypi` — under a MotherDuck-owned PyPI identity, not a personal account.
+# The release-assets job is separate on purpose so assets attach regardless.
 
 name: release
 
@@ -50,3 +58,18 @@ jobs:
           generate_release_notes: true
           # PEP 440 pre-release tags (rc/a/b/dev) publish as GitHub prereleases
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'dev') }}
+
+  pypi:
+    needs: build
+    if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing (OIDC); no long-lived token
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: dist
+          path: dist/
+      - run: rm dist/SHA256SUMS
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
