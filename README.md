@@ -120,6 +120,15 @@ refuses to mix deployments: resuming against a different Snowflake account
 (or a different source kind) than the one recorded in `meta.collections` is
 an error.
 
+## Local dashboard
+
+`dashboard/` holds an optional, fully client-side Mosaic + DuckDB-WASM dashboard
+over the `report.*` facts of a Snowflake collection (storage footprint, spend,
+workload, concurrency, migration-risk signals, coverage). It exports parquet from
+your `assessment.duckdb`, builds a static bundle, and runs from a local static
+server with no backend and no remote requests. It embeds real object names, so it
+is local-only and must not be deployed; see [dashboard/README.md](dashboard/README.md).
+
 ## Snowflake privileges
 
 Two ways to grant what the collector reads: the recommended tiered database

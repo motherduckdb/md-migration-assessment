@@ -1,0 +1,8 @@
+# The dashboard is local-only. Nothing derived from a real collection is committed.
+node_modules/
+dist/
+public/data/*.parquet
+public/extensions/
+.playwright-mcp/
+*.duckdb
+*.duckdb.wal

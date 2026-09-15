@@ -1,0 +1,26 @@
+{
+  "name": "md-migration-assessment-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "export": "python3 scripts/export.py",
+    "dev": "vite",
+    "build": "bash scripts/vendor-extensions.sh --check && vite build",
+    "preview": "vite preview",
+    "serve": "serve dist",
+    "vendor": "bash scripts/vendor-extensions.sh"
+  },
+  "dependencies": {
+    "@duckdb/duckdb-wasm": "1.32.0",
+    "@uwdata/mosaic-core": "^0.31.0",
+    "@uwdata/vgplot": "^0.31.0"
+  },
+  "devDependencies": {
+    "serve": "^14.2.6",
+    "vite": "^8.3.0"
+  },
+  "overrides": {
+    "@duckdb/duckdb-wasm": "1.32.0"
+  }
+}
