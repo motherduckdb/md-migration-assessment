@@ -181,6 +181,23 @@ def assess(
 
 
 @app.command()
+def dashboard(
+    db: str = typer.Option("assessment.duckdb", help="Assessment database path (opened read-only)."),
+    port: int = typer.Option(0, help="Loopback port; 0 picks a free one."),
+    no_open: bool = typer.Option(False, "--no-open", help="Print the URL without opening a browser."),
+) -> None:
+    """Serve the dashboard locally over this collection. Nothing leaves this machine."""
+    from pathlib import Path
+
+    from .dashboard import serve
+
+    try:
+        serve(Path(db), port=port, open_browser=not no_open)
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command()
 def handoff(
     db: str = typer.Option("assessment.duckdb", help="Assessment database path."),
     dest: str = typer.Option(..., help="Path for the reduced handoff database."),

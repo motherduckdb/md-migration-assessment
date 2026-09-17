@@ -43,6 +43,14 @@ Repository = "https://github.com/motherduckdb/md-migration-assessment"
 [project.scripts]
 md-assess = "md_migration_assessment.cli:app"
 
+[tool.hatch.build]
+# The dashboard bundle and the Dive source are build outputs (gitignored), so
+# hatch would drop them; `artifacts` includes them when present at build time.
+artifacts = [
+    "src/md_migration_assessment/dashboard/static/",
+    "src/md_migration_assessment/dashboard/dive.tsx",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/md_migration_assessment"]
 
