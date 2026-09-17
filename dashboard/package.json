@@ -14,7 +14,8 @@
   "dependencies": {
     "@duckdb/duckdb-wasm": "1.32.0",
     "@uwdata/mosaic-core": "^0.31.0",
-    "@uwdata/vgplot": "^0.31.0"
+    "@uwdata/vgplot": "^0.31.0",
+    "d3": "^7.9.0"
   },
   "devDependencies": {
     "serve": "^14.2.6",

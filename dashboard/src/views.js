@@ -78,8 +78,18 @@ export function spendOverTime({ $wh, palette, width, window }) {
 // ---------------------------------------------------------------------------
 // 3. Workload profile — query_type × warehouse, faceted by query class
 // ---------------------------------------------------------------------------
-export function workloadProfile({ $wh, palette, width }) {
+export function workloadProfile({ $wh, palette, width, extent }) {
   const { warehouse, queryClass } = palette;
+  // Fixed domains from the unfiltered extent (main.js) with 15% headroom, so the
+  // axes do not jump as the brush and menus filter the dots. Ticks are the
+  // powers that fit inside the domain: 1 MB → 1 GB → 1 TB → 1 PB for bytes, 1 s → 1 min → 1 h →
+  // 1 d → 10 d → 100 d → 1000 d for time. Symlog keeps zero on-axis for the
+  // zero-byte file operations.
+  const xmax = Math.max(extent?.xmax ?? 0, 2 ** 20) * 1.15;
+  const ymax = Math.max(extent?.ymax ?? 0, 1e3) * 1.15;
+  const xTicks = [0];
+  for (let v = 2 ** 20; v <= xmax; v *= 1024) xTicks.push(v);
+  const yTicks = [0, ...[1e3, 6e4, 3.6e6, 8.64e7, 8.64e8, 8.64e9, 8.64e10].filter(v => v <= ymax)];
   return vg.plot(
     vg.dot(vg.from('workload_rollup', { filterBy: $wh }), {
       x: sum('sum_bytes_scanned'),
@@ -97,13 +107,15 @@ export function workloadProfile({ $wh, palette, width }) {
     vg.colorDomain(warehouse.domain), vg.colorRange(warehouse.range),
     vg.fxDomain(queryClass.domain),
     vg.fxLabel(null),
-    vg.xScale('symlog'), vg.xLabel('bytes scanned in window (binary scale) →'),
+    vg.xScale('symlog'), vg.xDomain([0, xmax]), vg.xLabel('bytes scanned in window (binary scale) →'),
     vg.xTickFormat(v => (v === 0 ? '0' : bytesTicks(v))),
-    vg.xTicks([0, 2 ** 30, 2 ** 35, 2 ** 40, 2 ** 45]),
-    vg.yScale('symlog'), vg.yLabel('↑ server-side elapsed in window'),
+    vg.xTicks(xTicks),
+    vg.yScale('symlog'), vg.yDomain([0, ymax]), vg.yLabel('↑ server-side elapsed in window'),
     vg.yTickFormat(v => (v === 0 ? '0' : formatMs(v))),
-    vg.yTicks([0, 6e4, 3.6e6, 8.64e7, 8.64e8, 8.64e9]),
+    vg.yTicks(yTicks),
     vg.rRange([2, 26]),
+    // room for the largest dot at either extreme instead of clipping it at the frame
+    vg.inset(14),
     vg.xGrid(true), vg.yGrid(true),
     vg.marginLeft(70), vg.marginRight(20), vg.marginTop(30), vg.width(width), vg.height(360)
   );

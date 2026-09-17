@@ -20,6 +20,13 @@ import duckdb
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
+# The schema shapes the SELECTs below (and src/) were written against. A file
+# written under another version fails here with a re-collect / rebuild message
+# instead of a binder error on a column the old shape never had. Bump these
+# together with the SELECTs when the collector's meta.* or report.* changes.
+EXPECTED_META_SCHEMA_VERSION = 3
+EXPECTED_REPORT_SCHEMA_VERSION = 2
+
 # (parquet name, SELECT). Order and column names are what src/ expects.
 EXPORTS: list[tuple[str, str]] = [
     # 1. Storage sizing at table grain. is_system is what the app filters on.
@@ -97,15 +104,51 @@ EXPORTS: list[tuple[str, str]] = [
 ]
 
 
+def _table_exists(con: duckdb.DuckDBPyConnection, schema: str, table: str) -> bool:
+    return bool(con.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
+        [schema, table],
+    ).fetchone())
+
+
+def check_versions(con: duckdb.DuckDBPyConnection, db_path: Path) -> None:
+    """Refuse a collection whose meta.* or report.* shapes differ from what the
+    SELECTs below expect. Mirrors the CLI's own checks (db.check_meta_version,
+    report.check_report_version) so the guidance is the same."""
+    if not _table_exists(con, "meta", "collections"):
+        raise ValueError(f"{db_path} is not an md-assess collection (no meta.collections)")
+    versions = {v for (v,) in con.execute(
+        "SELECT DISTINCT meta_schema_version FROM meta.collections").fetchall()}
+    stale = sorted(v for v in versions if v != EXPECTED_META_SCHEMA_VERSION)
+    if stale:
+        raise ValueError(
+            f"{db_path} has meta schema v{stale[0]}; this dashboard reads "
+            f"v{EXPECTED_META_SCHEMA_VERSION}. Re-collect into a new file with a "
+            "current md-assess (explicit migrations are not provided pre-1.0).")
+    if not _table_exists(con, "report", "feature_inventory"):
+        raise ValueError(
+            f"{db_path} has no report.* layer yet; build it with: md-assess assess --db {db_path}")
+    stored = 1  # a report without report.schema_version predates versioning (v0.1.2 and earlier)
+    if _table_exists(con, "report", "schema_version"):
+        row = con.execute("SELECT report_schema_version FROM report.schema_version").fetchone()
+        stored = row[0] if row else 1
+    if stored != EXPECTED_REPORT_SCHEMA_VERSION:
+        raise ValueError(
+            f"report.* in {db_path} was built with report schema v{stored}; this dashboard "
+            f"reads v{EXPECTED_REPORT_SCHEMA_VERSION}. The raw evidence is unaffected; rebuild "
+            f"the report with: md-assess assess --db {db_path}")
+
+
 def export(db_path: Path, out_dir: Path) -> list[tuple[str, int]]:
     if not db_path.is_file():
-        sys.exit(f"source database not found: {db_path}")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for old in out_dir.glob("*.parquet"):
-        old.unlink()
+        raise FileNotFoundError(f"source database not found: {db_path}")
     con = duckdb.connect(str(db_path), read_only=True)
     written: list[tuple[str, int]] = []
     try:
+        check_versions(con, db_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for old in out_dir.glob("*.parquet"):
+            old.unlink()
         for name, select in EXPORTS:
             target = out_dir / f"{name}.parquet"
             path_literal = str(target).replace("'", "''")
@@ -121,7 +164,10 @@ def main() -> None:
     ap.add_argument("--db", type=Path, default=ROOT / "assessment.duckdb", help="md-assess output database (read-only)")
     ap.add_argument("--out", type=Path, default=ROOT / "public" / "data", help="destination folder for parquet files")
     args = ap.parse_args()
-    written = export(args.db, args.out)
+    try:
+        written = export(args.db, args.out)
+    except (FileNotFoundError, ValueError) as exc:
+        sys.exit(str(exc))
     total = 0
     print(f"exported to {args.out}:")
     for name, size in written:

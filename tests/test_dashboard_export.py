@@ -84,10 +84,14 @@ def synthetic_db(tmp_path) -> Path:
         FROM meta.extract_runs WHERE status <> 'complete'""")
     con.execute("""
         CREATE TABLE meta.collections AS SELECT * FROM (VALUES
-          ('0.1.3', 'standard', 30, 'snowflake', 'LOCATOR1', 'AWS_US_EAST_1', NULL,
+          ('0.1.3', 3, 'standard', 30, 'snowflake', 'LOCATOR1', 'AWS_US_EAST_1', NULL,
            TIMESTAMPTZ '2030-02-01 00:00:00+00', TIMESTAMPTZ '2030-02-01 00:10:00+00')
-        ) t(tool_version, profile, history_days, source_kind, source_deployment, source_region,
-            source_edition, started_at, finished_at)""")
+        ) t(tool_version, meta_schema_version, profile, history_days, source_kind, source_deployment,
+            source_region, source_edition, started_at, finished_at)""")
+    con.execute("""
+        CREATE TABLE report.schema_version AS
+        SELECT 2 AS report_schema_version, '0.1.3' AS tool_version,
+               TIMESTAMPTZ '2030-02-01 00:10:00+00' AS built_at""")
     con.execute(f"""
         CREATE TABLE raw.procedures AS SELECT 'DB_A' AS PROCEDURE_CATALOG, 'P1' AS PROCEDURE_NAME,
                '{SENTINEL}' AS PROCEDURE_DEFINITION""")
@@ -137,3 +141,33 @@ def test_export_opens_source_read_only(synthetic_db, tmp_path):
     before = synthetic_db.stat().st_mtime_ns
     mod.export(synthetic_db, tmp_path / "data")
     assert synthetic_db.stat().st_mtime_ns == before
+
+
+def test_export_refuses_stale_meta_schema(synthetic_db, tmp_path):
+    mod = _load_export_module()
+    con = duckdb.connect(str(synthetic_db))
+    con.execute("UPDATE meta.collections SET meta_schema_version = 2")
+    con.close()
+    with pytest.raises(ValueError, match="meta schema v2.*Re-collect"):
+        mod.export(synthetic_db, tmp_path / "data")
+    assert not (tmp_path / "data").exists()  # refused before writing anything
+
+
+def test_export_refuses_stale_report_schema(synthetic_db, tmp_path):
+    mod = _load_export_module()
+    con = duckdb.connect(str(synthetic_db))
+    con.execute("DROP TABLE report.schema_version")  # a v1 (pre-versioning) report
+    con.close()
+    with pytest.raises(ValueError, match="report schema v1.*md-assess assess"):
+        mod.export(synthetic_db, tmp_path / "data")
+
+
+def test_export_versions_track_the_package():
+    """The dashboard pins the shapes it was written against; fail loudly here when
+    the collector moves on so the SELECTs get reviewed together with the bump."""
+    from md_migration_assessment import META_SCHEMA_VERSION
+    from md_migration_assessment.report import REPORT_SCHEMA_VERSION
+
+    mod = _load_export_module()
+    assert mod.EXPECTED_META_SCHEMA_VERSION == META_SCHEMA_VERSION
+    assert mod.EXPECTED_REPORT_SCHEMA_VERSION == REPORT_SCHEMA_VERSION

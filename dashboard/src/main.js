@@ -8,7 +8,7 @@ import { el, rows } from './clients/util.js';
 import * as views from './views.js';
 import './styles.css';
 
-// One parquet per view-backing table, exported by scripts/export.sh.
+// One parquet per view-backing table, exported by scripts/export.py.
 const TABLES = [
   'sizing', 'spend_profile', 'workload_rollup', 'concurrency_profile',
   'dialect_constructs', 'feature_inventory', 'ingestion_inventory',
@@ -104,6 +104,15 @@ async function main() {
     `SELECT min(usage_date) AS start, max(usage_date) + INTERVAL 1 DAY AS "end" FROM spend_profile`));
   const window = [new Date(start), new Date(end)];
 
+  // workload-profile axis extents from the UNFILTERED (warehouse × query type)
+  // aggregates, so the symlog axes and their power-of-two / time ticks fit any
+  // history window and stay put while the brush and menus filter the dots.
+  const [{ xmax, ymax }] = rows(await coordinator.query(`
+    SELECT max(b) AS xmax, max(e) AS ymax
+    FROM (SELECT sum(sum_bytes_scanned) AS b, sum(sum_elapsed_ms) AS e
+          FROM workload_rollup GROUP BY warehouse_name, query_type)`));
+  const workloadExtent = { xmax: Number(xmax ?? 0), ymax: Number(ymax ?? 0) };
+
   // --- shared selections and params -----------------------------------------
   // $wh: warehouse menu + spend-timeline brush + legend toggles (crossfilter: a
   //      plot never filters itself by its own brush). Applied to every table that
@@ -178,7 +187,7 @@ async function main() {
   // 3. workload
   grid.append(panel('3 · Workload profile',
     'Each dot is a (warehouse, query type) pair over the selected window: bytes scanned vs server-side elapsed time, sized by query count, faceted by class so transformations (CTAS, MERGE, …) and file operations (PUT / LIST / REMOVE) never blur together. Both axes are symlog so zero-byte file operations stay visible at the left edge.',
-    views.workloadProfile({ $wh, palette, width: W1 })));
+    views.workloadProfile({ $wh, palette, width: W1, extent: workloadExtent })));
 
   // 4. concurrency
   grid.append(panel('4 · Concurrency and contention',

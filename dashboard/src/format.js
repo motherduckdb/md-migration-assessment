@@ -18,16 +18,18 @@ export const formatPct = d3format('.2%');
 export const formatDate = utcFormat('%Y-%m-%d');
 export const formatDateTime = utcFormat('%Y-%m-%d %H:%M UTC');
 
+// one decimal, but "1 s" / "24 h" rather than "1.0 s" / "24.0 h" on round values
+const one = n => n.toFixed(1).replace(/\.0$/, '');
 export function formatMs(ms) {
   if (ms == null) return '—';
   const s = ms / 1000;
   if (s < 1) return `${Math.round(ms)} ms`;
-  if (s < 60) return `${s.toFixed(1)} s`;
+  if (s < 60) return `${one(s)} s`;
   const m = s / 60;
-  if (m < 60) return `${m.toFixed(1)} min`;
+  if (m < 60) return `${one(m)} min`;
   const h = m / 60;
-  if (h < 48) return `${h.toFixed(1)} h`;
-  return `${(h / 24).toFixed(1)} d`;
+  if (h < 48) return `${one(h)} h`;
+  return `${one(h / 24)} d`;
 }
 
 export function formatCount(v, lowerBound = false) {
