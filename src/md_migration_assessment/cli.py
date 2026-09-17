@@ -231,8 +231,21 @@ def publish(
         raise typer.BadParameter(str(exc)) from exc
 
     manifest = result.handoff_manifest
-    excluded = sorted({c for t in manifest["tables"].values() for c in t.get("excluded_columns", [])})
-    rows = sum(t["rows"] for t in manifest["tables"].values())
+    tables = manifest["tables"]
+    excluded = sorted({c for t in tables.values() for c in t.get("excluded_columns", [])})
+    rows = sum(t["rows"] for t in tables.values())
+    # Disclosure review, from the handoff manifest: which sensitive classes travel
+    # (object names, identities, comments...), which kept columns carry no
+    # classification, and which columns were dropped as unexpected drift.
+    disclosed: dict[str, list[str]] = {}
+    unclassified: list[str] = []
+    dropped: list[str] = []
+    for table, info in sorted(tables.items()):
+        for cls, cols in sorted(info.get("sensitive_included", {}).items()):
+            disclosed.setdefault(cls, []).extend(f"{table}.{c}" for c in cols)
+        unclassified.extend(f"{table}.{c}" for c in info.get("unclassified_included", []))
+        dropped.extend(f"{table}.{c}" for c in info.get("dropped_unexpected", []))
+
     if as_json:
         typer.echo(json.dumps({
             "database": result.database,
@@ -241,11 +254,15 @@ def publish(
             "dive_title": result.title,
             "dive_created": result.dive_created,
             "handoff_path": str(result.handoff_path) if result.handoff_path else None,
-            "handoff_tables": len(manifest["tables"]),
+            "handoff_tables": len(tables),
             "handoff_rows": rows,
             "excluded_columns": excluded,
+            "sensitive_included": disclosed,
+            "unclassified_included": unclassified,
+            "dropped_unexpected": dropped,
             "skipped_raw_tables": manifest["skipped"],
-        }))
+            "handoff_manifest": manifest,
+        }, indent=2))
         return
 
     # Rich renders [link=...] as an OSC 8 hyperlink where the terminal supports it;
@@ -259,15 +276,28 @@ def publish(
     console.print(f"  [bold]Open[/bold]      [link={result.dive_url}][bold blue underline]{result.dive_url}[/bold blue underline][/link]")
     console.print(f"  [bold]Database[/bold]  md:{result.database}")
     console.print(
-        f"  [bold]Uploaded[/bold]  the reduced handoff only: {len(manifest['tables'])} tables, {rows:,} rows; "
+        f"  [bold]Uploaded[/bold]  the reduced handoff only: {len(tables)} tables, {rows:,} rows; "
         "no source bodies or query text."
     )
     if excluded:
         console.print(f"            [dim]excluded columns: {', '.join(excluded)}[/dim]")
-    if manifest["skipped"]:
-        console.print(f"            [dim]skipped raw tables: {', '.join(manifest['skipped'])}[/dim]")
     if result.handoff_path is not None:
         console.print(f"  [bold]Handoff[/bold]   kept at {result.handoff_path}")
+    console.print()
+    console.print("  [bold]Disclosed in the upload[/bold] [dim](review before sharing the Dive)[/dim]")
+    if disclosed:
+        for cls, cols in sorted(disclosed.items()):
+            n_tables = len({c.rsplit(".", 1)[0] for c in cols})
+            console.print(f"    {cls:<16} {len(cols)} columns in {n_tables} tables")
+    else:
+        console.print("    [dim]no classified sensitive columns[/dim]")
+    if unclassified:
+        console.print(f"    [yellow]unclassified columns included ({len(unclassified)}):[/yellow] {', '.join(unclassified)}")
+    if dropped:
+        console.print(f"    [yellow]dropped as unexpected drift ({len(dropped)}):[/yellow] {', '.join(dropped)}")
+    if manifest["skipped"]:
+        console.print(f"    [yellow]raw tables skipped (no manifest entry):[/yellow] {', '.join(manifest['skipped'])}")
+    console.print("    [dim]Per-column detail: --json, or inspect the kept handoff with `md-assess handoff`.[/dim]")
     console.print()
     console.print(
         "[dim]The database and Dive live in your MotherDuck organization; share them with its own controls. "

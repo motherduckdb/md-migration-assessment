@@ -20,10 +20,23 @@ def _fake_publish(monkeypatch, tmp_path, created=True):
         handoff_path=tmp_path / "md_assessment_acme.handoff.duckdb",
         handoff_manifest={
             "tables": {
-                "report.sizing": {"rows": 10, "excluded_columns": []},
-                "raw.views": {"rows": 3, "excluded_columns": ["view_definition"]},
+                "report.sizing": {"rows": 10, "excluded_columns": [], "sensitive_included": {}},
+                "raw.views": {
+                    "rows": 3,
+                    "excluded_columns": ["view_definition"],
+                    "dropped_unexpected": ["mystery_col"],
+                    "sensitive_included": {"object_name": ["table_catalog", "table_name"], "user_identity": ["table_owner"]},
+                    "unclassified_included": ["is_secure"],
+                },
+                "raw.tables": {
+                    "rows": 7,
+                    "excluded_columns": [],
+                    "dropped_unexpected": [],
+                    "sensitive_included": {"object_name": ["table_name"], "comment": ["comment"]},
+                    "unclassified_included": [],
+                },
             },
-            "skipped": [],
+            "skipped": ["odd_table"],
         },
         dive_id="7b03256b-7270-4b22-9c61-d6fd829e56ec",
         dive_url="https://app.motherduck.com/dives/7b03256b-7270-4b22-9c61-d6fd829e56ec",
@@ -50,9 +63,16 @@ def test_publish_prints_a_readable_report_with_the_url(monkeypatch, tmp_path):
     assert result.dive_url in out.output
     assert result.title in out.output and "(created)" in out.output
     assert "md:md_assessment_acme" in out.output
-    assert "2 tables, 13 rows" in out.output
+    assert "3 tables, 20 rows" in out.output
     assert "view_definition" in out.output
     assert str(result.handoff_path) in out.output
+    # the disclosure review from the handoff manifest
+    assert "Disclosed in the upload" in out.output
+    assert "object_name" in out.output and "3 columns in 2 tables" in out.output
+    assert "user_identity" in out.output and "comment" in out.output
+    assert "unclassified columns included (1)" in out.output and "raw.views.is_secure" in out.output
+    assert "dropped as unexpected drift (1)" in out.output and "raw.views.mystery_col" in out.output
+    assert "odd_table" in out.output
     assert calls[0][1]["keep_handoff"] is True and calls[0][1]["handoff_dir"] == tmp_path
 
 
@@ -64,4 +84,9 @@ def test_publish_json_output(monkeypatch, tmp_path):
     assert payload["dive_url"] == result.dive_url
     assert payload["dive_created"] is False
     assert payload["excluded_columns"] == ["view_definition"]
-    assert payload["handoff_tables"] == 2 and payload["handoff_rows"] == 13
+    assert payload["handoff_tables"] == 3 and payload["handoff_rows"] == 20
+    assert payload["sensitive_included"]["object_name"] == ["raw.tables.table_name", "raw.views.table_catalog", "raw.views.table_name"]
+    assert payload["unclassified_included"] == ["raw.views.is_secure"]
+    assert payload["dropped_unexpected"] == ["raw.views.mystery_col"]
+    assert payload["skipped_raw_tables"] == ["odd_table"]
+    assert payload["handoff_manifest"]["tables"]["raw.views"]["rows"] == 3
