@@ -151,9 +151,9 @@ MotherDuck database named `md_assessment_<account>` (override with `--name`),
 and creates a Dive with the same dashboard over it, printing its URL. Re-running
 with the same `--title` updates the Dive in place; an existing database is left
 alone unless you pass `--replace`. `--keep-handoff <dir>` keeps the uploaded
-file so you can inspect exactly what was transferred. The Dive and the
-database live in your MotherDuck organization; share them with the
-organization's own controls.
+file so you can inspect exactly what was transferred, and `--json` prints a
+machine-readable summary for scripts. The Dive and the database live in your
+MotherDuck organization; share them with the organization's own controls.
 
 ## Snowflake privileges
 

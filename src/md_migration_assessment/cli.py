@@ -204,6 +204,7 @@ def publish(
     title: Optional[str] = typer.Option(None, "--title", help="Dive title. Re-running with the same title updates the Dive in place."),
     replace: bool = typer.Option(False, "--replace", help="Drop and re-upload the MotherDuck database if it already exists."),
     keep_handoff: Optional[str] = typer.Option(None, "--keep-handoff", help="Directory to keep the uploaded handoff file in for review (default: deleted after upload)."),
+    as_json: bool = typer.Option(False, "--json", help="Print a machine-readable JSON summary instead of the report."),
 ) -> None:
     """Upload the reduced handoff to MotherDuck and create (or update) the dashboard Dive over it.
 
@@ -212,6 +213,8 @@ def publish(
     """
     import json
     from pathlib import Path
+
+    from rich.console import Console
 
     from .publish import publish as _publish
 
@@ -226,16 +229,50 @@ def publish(
         )
     except (FileNotFoundError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
+
     manifest = result.handoff_manifest
     excluded = sorted({c for t in manifest["tables"].values() for c in t.get("excluded_columns", [])})
-    typer.echo(f"uploaded handoff as MotherDuck database {result.database!r}")
-    typer.echo(f"  {len(manifest['tables'])} tables; excluded columns: {', '.join(excluded) or 'none'}; "
-               f"skipped raw tables: {', '.join(manifest['skipped']) or 'none'}")
+    rows = sum(t["rows"] for t in manifest["tables"].values())
+    if as_json:
+        typer.echo(json.dumps({
+            "database": result.database,
+            "dive_id": result.dive_id,
+            "dive_url": result.dive_url,
+            "dive_title": result.title,
+            "dive_created": result.dive_created,
+            "handoff_path": str(result.handoff_path) if result.handoff_path else None,
+            "handoff_tables": len(manifest["tables"]),
+            "handoff_rows": rows,
+            "excluded_columns": excluded,
+            "skipped_raw_tables": manifest["skipped"],
+        }))
+        return
+
+    # Rich renders [link=...] as an OSC 8 hyperlink where the terminal supports it;
+    # the visible text is the URL itself, so it stays copyable everywhere else.
+    console = Console(highlight=False, soft_wrap=True)
+    verb = "created" if result.dive_created else "updated"
+    console.print()
+    console.print("[bold green]Published to MotherDuck[/bold green]")
+    console.print()
+    console.print(f"  [bold]Dive[/bold]      {result.title}  [dim]({verb})[/dim]")
+    console.print(f"  [bold]Open[/bold]      [link={result.dive_url}][bold blue underline]{result.dive_url}[/bold blue underline][/link]")
+    console.print(f"  [bold]Database[/bold]  md:{result.database}")
+    console.print(
+        f"  [bold]Uploaded[/bold]  the reduced handoff only: {len(manifest['tables'])} tables, {rows:,} rows; "
+        "no source bodies or query text."
+    )
+    if excluded:
+        console.print(f"            [dim]excluded columns: {', '.join(excluded)}[/dim]")
+    if manifest["skipped"]:
+        console.print(f"            [dim]skipped raw tables: {', '.join(manifest['skipped'])}[/dim]")
     if result.handoff_path is not None:
-        typer.echo(f"  handoff kept at {result.handoff_path}")
-    typer.echo(f"{'created' if result.dive_created else 'updated'} Dive {result.title!r}")
-    typer.echo(f"  {result.dive_url}")
-    typer.echo(json.dumps({"database": result.database, "dive_id": result.dive_id, "dive_url": result.dive_url}))
+        console.print(f"  [bold]Handoff[/bold]   kept at {result.handoff_path}")
+    console.print()
+    console.print(
+        "[dim]The database and Dive live in your MotherDuck organization; share them with its own controls. "
+        "Re-run with the same --title to update the Dive in place.[/dim]"
+    )
 
 
 @app.command()
