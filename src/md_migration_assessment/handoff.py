@@ -180,6 +180,16 @@ AGGREGATE_SENSITIVE_COLUMNS: dict[str, PrivacyClass] = {
     "error_detail": PrivacyClass.COMMENT,
 }
 
+#: per-table overrides: the same column name means different things in
+#: different tables. report.feature_inventory.note is usually a fixed tool
+#: label, but build_report stores ``probe failed: {exc}`` there, and a
+#: database exception can quote customer object names. The other note columns
+#: (dialect_constructs, ingestion_inventory, tool_fingerprints) are literal
+#: strings from the fact builders and stay labels.
+AGGREGATE_TABLE_SENSITIVE_COLUMNS: dict[str, dict[str, PrivacyClass]] = {
+    "report.feature_inventory": {"note": PrivacyClass.COMMENT},
+}
+
 #: string columns whose values are produced by this tool (statuses, labels,
 #: versions, opaque hashes) or name vendor products, never customer objects.
 AGGREGATE_LABEL_COLUMNS: frozenset[str] = frozenset({
@@ -195,23 +205,35 @@ AGGREGATE_LABEL_COLUMNS: frozenset[str] = frozenset({
 _LABEL_SUFFIXES = ("_extract_status",)
 
 
-def _string_columns(con: duckdb.DuckDBPyConnection, schema: str, table: str) -> list[str]:
-    """Columns whose values can carry text (VARCHAR incl. lists, JSON, UUID)."""
+def _string_columns(
+    con: duckdb.DuckDBPyConnection, catalog: str, schema: str, table: str
+) -> list[str]:
+    """Columns whose values can carry text (VARCHAR incl. lists, JSON, UUID).
+
+    Scoped to one catalog: with the source attached and the destination copy
+    already created, information_schema.columns lists both, and an unscoped
+    query would return every column twice.
+    """
     rows = con.execute(
         "SELECT column_name, data_type FROM information_schema.columns "
-        "WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-        [schema, table],
+        "WHERE table_catalog = ? AND table_schema = ? AND table_name = ? "
+        "ORDER BY ordinal_position",
+        [catalog, schema, table],
     ).fetchall()
     return [c for c, t in rows if any(k in t.upper() for k in ("VARCHAR", "JSON", "UUID"))]
 
 
-def classify_aggregate_columns(columns: list[str]) -> tuple[dict[str, list[str]], list[str]]:
-    """(sensitive_included by class, unclassified) for a meta/report table's string columns."""
+def classify_aggregate_columns(
+    table_key: str, columns: list[str]
+) -> tuple[dict[str, list[str]], list[str]]:
+    """(sensitive_included by class, unclassified) for one meta/report table's
+    string columns; ``table_key`` is ``schema.table`` for per-table overrides."""
+    overrides = AGGREGATE_TABLE_SENSITIVE_COLUMNS.get(table_key, {})
     disclosed: dict[str, list[str]] = {}
     unclassified: list[str] = []
     for col in columns:
         key = col.lower()
-        cls = AGGREGATE_SENSITIVE_COLUMNS.get(key)
+        cls = overrides.get(key) or AGGREGATE_SENSITIVE_COLUMNS.get(key)
         if cls is not None:
             disclosed.setdefault(cls.value, []).append(key)
         elif key in AGGREGATE_LABEL_COLUMNS or key.endswith(_LABEL_SUFFIXES):
@@ -286,7 +308,8 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
                     f'SELECT count(*) FROM "{schema}"."{table}"'
                 ).fetchone()[0]
                 disclosed, unclassified = classify_aggregate_columns(
-                    _string_columns(con, schema, table)
+                    f"{schema}.{table}",
+                    _string_columns(con, "handoff_src", schema, table),
                 )
                 manifest["tables"][f"{schema}.{table}"] = {
                     "rows": rows,

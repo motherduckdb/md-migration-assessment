@@ -245,10 +245,20 @@ def test_handoff_classifies_every_aggregate_string_column(assessed_db, tmp_path)
     assert unclassified == {}, f"classify these in handoff.AGGREGATE_*_COLUMNS: {unclassified}"
 
     sizing = aggregate["report.sizing"]["sensitive_included"]
-    assert {"table_catalog", "table_schema", "table_name"} <= set(sizing["object_name"])
+    assert sorted(sizing["object_name"]) == ["table_catalog", "table_name", "table_schema"]
     assert "sample_objects" in aggregate["report.feature_inventory"]["sensitive_included"]["object_name"]
     assert "source_deployment" in aggregate["meta.collections"]["sensitive_included"]["object_name"]
     assert "error_detail" in aggregate["meta.extract_runs"]["sensitive_included"]["comment"]
+    # feature_inventory.note can carry "probe failed: <exception>" quoting object
+    # names; the other note columns are fixed literals from the fact builders
+    assert "note" in aggregate["report.feature_inventory"]["sensitive_included"]["comment"]
+    for table in ("report.dialect_constructs", "report.ingestion_inventory", "report.tool_fingerprints"):
+        assert "note" not in {c for cols in aggregate[table]["sensitive_included"].values() for c in cols}
+    # each column is disclosed exactly once (the source and destination catalogs
+    # both answer information_schema queries while the handoff is being built)
+    for key, entry in aggregate.items():
+        cols = [c for cs in entry["sensitive_included"].values() for c in cs] + entry["unclassified_included"]
+        assert len(cols) == len(set(cols)), f"{key} lists a column twice: {cols}"
     # tool-generated labels are not disclosed as sensitive
     for entry in aggregate.values():
         for cols in entry["sensitive_included"].values():
