@@ -122,12 +122,18 @@ an error.
 
 ## Local dashboard
 
-`dashboard/` holds an optional, fully client-side Mosaic + DuckDB-WASM dashboard
-over the `report.*` facts of a Snowflake collection (storage footprint, spend,
-workload, concurrency, migration-risk signals, coverage). It exports parquet from
-your `assessment.duckdb`, builds a static bundle, and runs from a local static
-server with no backend and no remote requests. It embeds real object names, so it
-is local-only and must not be deployed; see [dashboard/README.md](dashboard/README.md).
+```bash
+md-assess dashboard --db assessment.duckdb
+```
+
+Serves an interactive dashboard over the collection's `report.*` and `meta.*`
+layers (storage footprint, spend, workload profile, concurrency, migration-risk
+signals, ingestion and client tools, plus a coverage strip from
+`meta.extract_runs`). It runs entirely on this machine: a loopback-only server
+reads the database read-only and the browser talks to nothing else. The
+dashboard is authored as a MotherDuck Dive (`dive/`), so the same view can
+later be published into a MotherDuck organization. Like the collection
+itself, it names real databases, schemas, tables, warehouses and tools.
 
 ## Snowflake privileges
 

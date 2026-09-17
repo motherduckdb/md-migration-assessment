@@ -25,13 +25,42 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv run --locked pytest -q
 
+  dashboard:
+    name: dashboard (typecheck + bundle)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dive
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dive/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run bundle
+
   build:
     name: build package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dive/package-lock.json
+      # The wheel ships the dashboard bundle and the Dive source; build them first.
+      - run: npm ci && npm run build && npm run bundle
+        working-directory: dive
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.9.22"
           python-version: "3.12"
       - run: uv build
+      - name: Wheel contains the dashboard bundle
+        run: |
+          unzip -l dist/*.whl | grep -E "dashboard/static/index.html|dashboard/dive.tsx"

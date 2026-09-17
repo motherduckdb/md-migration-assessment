@@ -34,7 +34,19 @@ jobs:
             echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${version}" >&2
             exit 1
           fi
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dive/package-lock.json
+      # The wheel ships the dashboard bundle (md-assess dashboard) and the Dive
+      # source (md-assess publish); both are build outputs of dive/.
+      - run: npm ci && npm run build && npm run bundle
+        working-directory: dive
       - run: uv build
+      - name: Wheel contains the dashboard bundle
+        run: |
+          unzip -l dist/*.whl | grep -E "dashboard/static/index.html|dashboard/dive.tsx"
       - run: |
           cd dist && sha256sum * > SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

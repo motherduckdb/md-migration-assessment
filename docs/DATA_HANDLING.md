@@ -12,6 +12,14 @@ There is no upload command in the Public Preview. Any transfer to MotherDuck is 
 separate, manual action performed by the customer or prospect after reviewing the
 handoff contents.
 
+`md-assess dashboard` serves the local dashboard from a server bound to
+`127.0.0.1` on a random path, attaches the assessment database read-only, and
+disables DuckDB's external file and network access for the lifetime of the
+process. The page it serves makes no request to any other host; the browser
+bundle is shipped inside the package, not fetched. The dashboard shows the same
+object names, identities and comments the collection contains, so treat a
+screenshot of it as you would the collection itself.
+
 ## What the files contain
 
 | Data category | Local assessment | Default handoff |
