@@ -32,7 +32,7 @@ from . import db
 from .collect.extractor import Command, Extractor
 from .collect.runner import FRAMEWORK_COLUMNS
 from .db import require_local_path
-from .privacy import HANDOFF_EXCLUDED_CLASSES
+from .privacy import HANDOFF_EXCLUDED_CLASSES, PrivacyClass
 from .sources import get_adapter
 from .sources.base import SourceAdapter
 
@@ -156,6 +156,93 @@ def _tables(con: duckdb.DuckDBPyConnection, schema: str) -> list[str]:
     ]
 
 
+# ── meta.* / report.* column policy ──────────────────────────────────────────
+# The aggregate layers travel wholesale: they contain no source bodies or query
+# text by construction. They do carry customer identifiers, so their
+# string-typed columns are classified here by name and disclosed in the
+# manifest like raw columns are. Every string column must appear in one of the
+# two sets; a new one lands in ``unclassified_included`` (and fails the
+# handoff test) until someone decides what it is.
+AGGREGATE_SENSITIVE_COLUMNS: dict[str, PrivacyClass] = {
+    # database / schema / table identifiers and object samples
+    "table_catalog": PrivacyClass.OBJECT_NAME,
+    "table_schema": PrivacyClass.OBJECT_NAME,
+    "table_name": PrivacyClass.OBJECT_NAME,
+    "warehouse_name": PrivacyClass.OBJECT_NAME,
+    "sample_objects": PrivacyClass.OBJECT_NAME,
+    # --scope entries are database/schema names
+    "scope": PrivacyClass.OBJECT_NAME,
+    "requested_scope": PrivacyClass.OBJECT_NAME,
+    "actual_scope": PrivacyClass.OBJECT_NAME,
+    # the account locator identifies the deployment; disclosed with object names
+    "source_deployment": PrivacyClass.OBJECT_NAME,
+    # server error text: free text that can quote object names
+    "error_detail": PrivacyClass.COMMENT,
+}
+
+#: per-table overrides: the same column name means different things in
+#: different tables. report.feature_inventory.note is usually a fixed tool
+#: label, but build_report stores ``probe failed: {exc}`` there, and a
+#: database exception can quote customer object names. The other note columns
+#: (dialect_constructs, ingestion_inventory, tool_fingerprints) are literal
+#: strings from the fact builders and stay labels.
+AGGREGATE_TABLE_SENSITIVE_COLUMNS: dict[str, dict[str, PrivacyClass]] = {
+    "report.feature_inventory": {"note": PrivacyClass.COMMENT},
+}
+
+#: string columns whose values are produced by this tool (statuses, labels,
+#: versions, opaque hashes) or name vendor products, never customer objects.
+AGGREGATE_LABEL_COLUMNS: frozenset[str] = frozenset({
+    "collection_id", "tool_version", "profile", "mode", "query_text_mode",
+    "source_kind", "source_region", "source_edition", "source_version",
+    "extractor", "extractor_version", "target_table", "status", "source_used",
+    "required_privilege", "min_edition", "error_category",
+    "category", "feature", "observation_status", "unknown_reason", "source_extractor",
+    "extract_status", "note", "construct", "source", "query_type", "table_type",
+    "load_method", "confidence", "detection_method", "tool",
+    "shape_key", "query_parameterized_hash_version",
+})
+_LABEL_SUFFIXES = ("_extract_status",)
+
+
+def _string_columns(
+    con: duckdb.DuckDBPyConnection, catalog: str, schema: str, table: str
+) -> list[str]:
+    """Columns whose values can carry text (VARCHAR incl. lists, JSON, UUID).
+
+    Scoped to one catalog: with the source attached and the destination copy
+    already created, information_schema.columns lists both, and an unscoped
+    query would return every column twice.
+    """
+    rows = con.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_catalog = ? AND table_schema = ? AND table_name = ? "
+        "ORDER BY ordinal_position",
+        [catalog, schema, table],
+    ).fetchall()
+    return [c for c, t in rows if any(k in t.upper() for k in ("VARCHAR", "JSON", "UUID"))]
+
+
+def classify_aggregate_columns(
+    table_key: str, columns: list[str]
+) -> tuple[dict[str, list[str]], list[str]]:
+    """(sensitive_included by class, unclassified) for one meta/report table's
+    string columns; ``table_key`` is ``schema.table`` for per-table overrides."""
+    overrides = AGGREGATE_TABLE_SENSITIVE_COLUMNS.get(table_key, {})
+    disclosed: dict[str, list[str]] = {}
+    unclassified: list[str] = []
+    for col in columns:
+        key = col.lower()
+        cls = overrides.get(key) or AGGREGATE_SENSITIVE_COLUMNS.get(key)
+        if cls is not None:
+            disclosed.setdefault(cls.value, []).append(key)
+        elif key in AGGREGATE_LABEL_COLUMNS or key.endswith(_LABEL_SUFFIXES):
+            continue
+        else:
+            unclassified.append(key)
+    return disclosed, unclassified
+
+
 def build_handoff(source_path: str, dest_path: str) -> dict:
     """Build the reduced handoff database. Returns its review manifest."""
     require_local_path(source_path, "handoff source")
@@ -208,7 +295,9 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
         con.execute(f'CREATE SCHEMA IF NOT EXISTS "{dest_db}".report')
 
         # meta + report travel wholesale: coverage records and facts contain
-        # no source bodies or query text by construction.
+        # no source bodies or query text by construction. Their string-typed
+        # columns are still classified (AGGREGATE_*_COLUMNS) so the manifest
+        # discloses the object names and identifiers they carry.
         for schema in ("meta", "report"):
             for table in _tables(con, schema):
                 con.execute(
@@ -218,8 +307,16 @@ def build_handoff(source_path: str, dest_path: str) -> dict:
                 rows = con.execute(
                     f'SELECT count(*) FROM "{schema}"."{table}"'
                 ).fetchone()[0]
+                disclosed, unclassified = classify_aggregate_columns(
+                    f"{schema}.{table}",
+                    _string_columns(con, "handoff_src", schema, table),
+                )
                 manifest["tables"][f"{schema}.{table}"] = {
-                    "rows": rows, "excluded_columns": [], "sensitive_included": {},
+                    "rows": rows,
+                    "excluded_columns": [],
+                    "dropped_unexpected": [],
+                    "sensitive_included": disclosed,
+                    "unclassified_included": unclassified,
                 }
 
         by_target = {ex.target_table: ex for ex in adapter.extractors}

@@ -14,3 +14,7 @@ dist/
 
 # local design notes
 md-migration-assessment-SPEC.md
+
+# dashboard bundle: built from dive/ by `npm run build` (release workflow), shipped in the wheel
+src/md_migration_assessment/dashboard/static/
+src/md_migration_assessment/dashboard/dive.tsx

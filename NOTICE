@@ -8,3 +8,9 @@ src/md_migration_assessment/sources/snowflake/queries/) are derived from
 google/dwh-migration-tools (https://github.com/google/dwh-migration-tools),
 Copyright Google LLC, licensed under the Apache License, Version 2.0.
 Derived files carry an attribution header.
+
+
+The dashboard bundle shipped in the package (md_migration_assessment/dashboard/static/)
+includes third-party JavaScript (React, Recharts, d3, Lucide and their dependencies).
+Their license texts are collected in THIRD_PARTY_NOTICES.txt in the same directory,
+generated at build time by dive/scripts/third-party-notices.ts.

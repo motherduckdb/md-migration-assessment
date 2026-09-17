@@ -181,6 +181,135 @@ def assess(
 
 
 @app.command()
+def dashboard(
+    db: str = typer.Option("assessment.duckdb", help="Assessment database path (opened read-only)."),
+    port: int = typer.Option(0, help="Loopback port; 0 picks a free one."),
+    no_open: bool = typer.Option(False, "--no-open", help="Print the URL without opening a browser."),
+) -> None:
+    """Serve the dashboard locally over this collection. Nothing leaves this machine."""
+    from pathlib import Path
+
+    from .dashboard import serve
+
+    try:
+        serve(Path(db), port=port, open_browser=not no_open)
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command()
+def publish(
+    db: str = typer.Option("assessment.duckdb", help="Assessment database path (read-only; the reduced handoff is what gets uploaded)."),
+    name: Optional[str] = typer.Option(None, "--name", help="MotherDuck database name. Default: md_assessment_<account>."),
+    title: Optional[str] = typer.Option(None, "--title", help="Dive title. Re-running with the same title updates the Dive in place."),
+    replace: bool = typer.Option(False, "--replace", help="Drop and re-upload the MotherDuck database if it already exists."),
+    keep_handoff: Optional[str] = typer.Option(None, "--keep-handoff", help="Directory to keep the uploaded handoff file in for review (default: deleted after upload)."),
+    as_json: bool = typer.Option(False, "--json", help="Print a machine-readable JSON summary instead of the report."),
+) -> None:
+    """Upload the reduced handoff to MotherDuck and create (or update) the dashboard Dive over it.
+
+    Needs MOTHERDUCK_TOKEN in the environment. Uploads the handoff only: no
+    source bodies or query text leave this machine. Review the printed manifest.
+    """
+    import json
+    from pathlib import Path
+
+    from rich.console import Console
+
+    from .publish import publish as _publish
+
+    try:
+        result = _publish(
+            Path(db),
+            database=name,
+            title=title,
+            replace=replace,
+            handoff_dir=Path(keep_handoff) if keep_handoff else None,
+            keep_handoff=bool(keep_handoff),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    manifest = result.handoff_manifest
+    tables = manifest["tables"]
+    excluded = sorted({c for t in tables.values() for c in t.get("excluded_columns", [])})
+    rows = sum(t["rows"] for t in tables.values())
+    # Disclosure review, from the handoff manifest: which sensitive classes travel
+    # (object names, identities, comments...), which kept columns carry no
+    # classification, and which columns were dropped as unexpected drift.
+    disclosed: dict[str, list[str]] = {}
+    unclassified: list[str] = []
+    dropped: list[str] = []
+    for table, info in sorted(tables.items()):
+        for cls, cols in sorted(info.get("sensitive_included", {}).items()):
+            disclosed.setdefault(cls, []).extend(f"{table}.{c}" for c in cols)
+        unclassified.extend(f"{table}.{c}" for c in info.get("unclassified_included", []))
+        dropped.extend(f"{table}.{c}" for c in info.get("dropped_unexpected", []))
+
+    if as_json:
+        typer.echo(json.dumps({
+            "database": result.database,
+            "dive_id": result.dive_id,
+            "dive_url": result.dive_url,
+            "dive_title": result.title,
+            "dive_created": result.dive_created,
+            "handoff_path": str(result.handoff_path) if result.handoff_path else None,
+            "handoff_tables": len(tables),
+            "handoff_rows": rows,
+            "excluded_columns": excluded,
+            "sensitive_included": disclosed,
+            "unclassified_included": unclassified,
+            "dropped_unexpected": dropped,
+            "skipped_raw_tables": manifest["skipped"],
+            "handoff_manifest": manifest,
+        }, indent=2))
+        return
+
+    # Rich renders [link=...] as an OSC 8 hyperlink where the terminal supports it;
+    # the visible text is the URL itself, so it stays copyable everywhere else.
+    console = Console(highlight=False, soft_wrap=True)
+    verb = "created" if result.dive_created else "updated"
+    console.print()
+    console.print("[bold green]Published to MotherDuck[/bold green]")
+    console.print()
+    console.print(f"  [bold]Dive[/bold]      {result.title}  [dim]({verb})[/dim]")
+    console.print(f"  [bold]Open[/bold]      [link={result.dive_url}][bold blue underline]{result.dive_url}[/bold blue underline][/link]")
+    console.print(f"  [bold]Database[/bold]  md:{result.database}")
+    console.print(
+        f"  [bold]Uploaded[/bold]  the reduced handoff only: {len(tables)} tables, {rows:,} rows; "
+        "no source bodies or query text."
+    )
+    if excluded:
+        console.print(f"            [dim]excluded columns: {', '.join(excluded)}[/dim]")
+    if result.handoff_path is not None:
+        console.print(f"  [bold]Handoff[/bold]   kept at {result.handoff_path}")
+    console.print()
+    console.print("  [bold]Disclosed in the upload[/bold] [dim](review before sharing the Dive)[/dim]")
+    if disclosed:
+        for cls, cols in sorted(disclosed.items()):
+            n_tables = len({c.rsplit(".", 1)[0] for c in cols})
+            console.print(f"    {cls:<16} {len(cols)} columns in {n_tables} tables")
+    else:
+        console.print("    [dim]no classified sensitive columns[/dim]")
+    if unclassified:
+        console.print(f"    [yellow]unclassified columns included ({len(unclassified)}):[/yellow] {', '.join(unclassified)}")
+    if dropped:
+        console.print(f"    [yellow]dropped as unexpected drift ({len(dropped)}):[/yellow] {', '.join(dropped)}")
+    if manifest["skipped"]:
+        console.print(f"    [yellow]raw tables skipped (no manifest entry):[/yellow] {', '.join(manifest['skipped'])}")
+    console.print(
+        "    [dim]Covers raw.*, meta.* and report.*: string columns are classified by name; "
+        "the remaining columns are counts, bytes, timestamps and statuses.[/dim]"
+    )
+    console.print("    [dim]Per-column detail: --json, or inspect the kept handoff with `md-assess handoff`.[/dim]")
+    console.print()
+    console.print(
+        "[dim]The database and Dive live in your MotherDuck organization; share them with its own controls. "
+        "Re-run with the same --title to update the Dive in place.[/dim]"
+    )
+
+
+@app.command()
 def handoff(
     db: str = typer.Option("assessment.duckdb", help="Assessment database path."),
     dest: str = typer.Option(..., help="Path for the reduced handoff database."),
