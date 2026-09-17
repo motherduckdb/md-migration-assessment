@@ -40,6 +40,7 @@ jobs:
           cache-dependency-path: dive/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build
       - run: npm run bundle
 
@@ -61,6 +62,14 @@ jobs:
           version: "0.9.22"
           python-version: "3.12"
       - run: uv build
-      - name: Wheel contains the dashboard bundle
+      - name: Wheel contains the dashboard bundle and third-party notices
         run: |
-          unzip -l dist/*.whl | grep -E "dashboard/static/index.html|dashboard/dive.tsx"
+          for f in dashboard/static/index.html dashboard/dive.tsx dashboard/static/THIRD_PARTY_NOTICES.txt; do
+            unzip -l dist/*.whl | grep -q "$f" || { echo "missing $f in wheel" >&2; exit 1; }
+          done
+      - name: sdist carries source only (no npm dependencies or build outputs)
+        run: |
+          if tar tzf dist/*.tar.gz | grep -E "node_modules/|dive/\.build/|\.duckdb$"; then
+            echo "sdist contains files that must not ship" >&2; exit 1
+          fi
+          ls -la dist/

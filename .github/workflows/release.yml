@@ -44,9 +44,17 @@ jobs:
       - run: npm ci && npm run build && npm run bundle
         working-directory: dive
       - run: uv build
-      - name: Wheel contains the dashboard bundle
+      - name: Wheel contains the dashboard bundle and third-party notices
         run: |
-          unzip -l dist/*.whl | grep -E "dashboard/static/index.html|dashboard/dive.tsx"
+          for f in dashboard/static/index.html dashboard/dive.tsx dashboard/static/THIRD_PARTY_NOTICES.txt; do
+            unzip -l dist/*.whl | grep -q "$f" || { echo "missing $f in wheel" >&2; exit 1; }
+          done
+      - name: sdist carries source only (no npm dependencies or build outputs)
+        run: |
+          if tar tzf dist/*.tar.gz | grep -E "node_modules/|dive/\.build/|\.duckdb$"; then
+            echo "sdist contains files that must not ship" >&2; exit 1
+          fi
+          ls -la dist/
       - run: |
           cd dist && sha256sum * > SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

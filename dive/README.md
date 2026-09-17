@@ -8,9 +8,9 @@ places:
   package serves the bundle built from this folder and answers its queries
   against the local file over loopback. Nothing leaves the machine, and the
   user needs no Node toolchain: the bundle ships inside the wheel.
-- **In MotherDuck**, via a planned `md-assess publish`, which will upload the
-  handoff database and create the Dive from the bundled source in
-  `.build/index.tsx`.
+- **In MotherDuck**, via `md-assess publish`, which uploads the reduced handoff
+  database and creates the Dive from the bundled source in `.build/index.tsx`
+  (`npm run bundle`).
 
 ## Develop
 
@@ -28,7 +28,8 @@ meta and report schema; `md-assess assess --db …` rebuilds the report layer.
 
 ```sh
 npm run typecheck
-npm run build     # local-mode bundle -> src/md_migration_assessment/dashboard/static/
+npm test          # runtime unit tests (node:test via tsx)
+npm run build     # local-mode bundle + THIRD_PARTY_NOTICES.txt -> src/md_migration_assessment/dashboard/static/
 npm run bundle    # Dive source -> .build/index.tsx and src/md_migration_assessment/dashboard/dive.tsx
 ```
 

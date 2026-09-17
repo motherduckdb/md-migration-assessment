@@ -130,6 +130,10 @@ an error.
 md-assess dashboard --db assessment.duckdb
 ```
 
+The `dashboard` and `publish` commands are new since the `v0.1.3` release the
+quickstart installs; until the next release, run them from a checkout
+(`uv run md-assess dashboard …`, after `npm install && npm run build` in `dive/`).
+
 Serves an interactive dashboard over the collection's `report.*` and `meta.*`
 layers (storage footprint, spend, workload profile, concurrency, migration-risk
 signals, ingestion and client tools, plus a coverage strip from

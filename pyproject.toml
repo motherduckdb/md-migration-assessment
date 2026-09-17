@@ -54,5 +54,18 @@ artifacts = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/md_migration_assessment"]
 
+[tool.hatch.build.targets.sdist]
+# Source only. dive/ authoring files travel so the sdist can rebuild the
+# bundle; npm dependencies and build outputs never do (hatch reads only the
+# root .gitignore, so dive/.gitignore alone does not keep them out).
+exclude = [
+    "dive/node_modules",
+    "dive/.build",
+    ".dive-preview",
+    "dist",
+    "*.duckdb",
+    "*.duckdb.wal",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

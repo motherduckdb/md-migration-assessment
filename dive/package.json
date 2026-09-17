@@ -6,9 +6,11 @@
   "description": "The md-assess dashboard, authored as a MotherDuck Dive. `npm run dev` previews it against a local collection; `npm run build` emits the local-mode bundle into the Python package; `npm run bundle` emits the Dive source that `md-assess publish` uploads.",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && tsx scripts/third-party-notices.ts",
     "bundle": "tsx scripts/bundle-dive.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "notices": "tsx scripts/third-party-notices.ts",
+    "test": "tsx --test runtime/*.test.ts"
   },
   "dependencies": {
     "d3": "^7.9.0",
