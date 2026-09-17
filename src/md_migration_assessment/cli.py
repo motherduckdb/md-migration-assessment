@@ -198,6 +198,47 @@ def dashboard(
 
 
 @app.command()
+def publish(
+    db: str = typer.Option("assessment.duckdb", help="Assessment database path (read-only; the reduced handoff is what gets uploaded)."),
+    name: Optional[str] = typer.Option(None, "--name", help="MotherDuck database name. Default: md_assessment_<account>."),
+    title: Optional[str] = typer.Option(None, "--title", help="Dive title. Re-running with the same title updates the Dive in place."),
+    replace: bool = typer.Option(False, "--replace", help="Drop and re-upload the MotherDuck database if it already exists."),
+    keep_handoff: Optional[str] = typer.Option(None, "--keep-handoff", help="Directory to keep the uploaded handoff file in for review (default: deleted after upload)."),
+) -> None:
+    """Upload the reduced handoff to MotherDuck and create (or update) the dashboard Dive over it.
+
+    Needs MOTHERDUCK_TOKEN in the environment. Uploads the handoff only: no
+    source bodies or query text leave this machine. Review the printed manifest.
+    """
+    import json
+    from pathlib import Path
+
+    from .publish import publish as _publish
+
+    try:
+        result = _publish(
+            Path(db),
+            database=name,
+            title=title,
+            replace=replace,
+            handoff_dir=Path(keep_handoff) if keep_handoff else None,
+            keep_handoff=bool(keep_handoff),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    manifest = result.handoff_manifest
+    excluded = sorted({c for t in manifest["tables"].values() for c in t.get("excluded_columns", [])})
+    typer.echo(f"uploaded handoff as MotherDuck database {result.database!r}")
+    typer.echo(f"  {len(manifest['tables'])} tables; excluded columns: {', '.join(excluded) or 'none'}; "
+               f"skipped raw tables: {', '.join(manifest['skipped']) or 'none'}")
+    if result.handoff_path is not None:
+        typer.echo(f"  handoff kept at {result.handoff_path}")
+    typer.echo(f"{'created' if result.dive_created else 'updated'} Dive {result.title!r}")
+    typer.echo(f"  {result.dive_url}")
+    typer.echo(json.dumps({"database": result.database, "dive_id": result.dive_id, "dive_url": result.dive_url}))
+
+
+@app.command()
 def handoff(
     db: str = typer.Option("assessment.duckdb", help="Assessment database path."),
     dest: str = typer.Option(..., help="Path for the reduced handoff database."),

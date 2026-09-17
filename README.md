@@ -34,6 +34,10 @@ a release notes a schema change. See [Support](SUPPORT.md) and
   excludes query text and source bodies, but intentionally retains object names,
   user/role identities, comments, and tag values. Review its manifest and the
   [data-handling guide](docs/DATA_HANDLING.md) before sharing it.
+- **MotherDuck mode (opt-in):** `md-assess publish` uploads that reduced handoff,
+  never the private collection, to your own MotherDuck account and creates the
+  dashboard as a Dive over it. It is the only command that connects to MotherDuck
+  and it does nothing without a token you provide.
 
 ## Quickstart: Snowflake (local mode)
 
@@ -131,9 +135,25 @@ layers (storage footprint, spend, workload profile, concurrency, migration-risk
 signals, ingestion and client tools, plus a coverage strip from
 `meta.extract_runs`). It runs entirely on this machine: a loopback-only server
 reads the database read-only and the browser talks to nothing else. The
-dashboard is authored as a MotherDuck Dive (`dive/`), so the same view can
-later be published into a MotherDuck organization. Like the collection
-itself, it names real databases, schemas, tables, warehouses and tools.
+dashboard is authored as a MotherDuck Dive (`dive/`), so the same view can be
+published into a MotherDuck organization (below). Like the collection itself,
+it names real databases, schemas, tables, warehouses and tools.
+
+## Publish to MotherDuck (optional)
+
+```bash
+export MOTHERDUCK_TOKEN="<token from Settings → Access tokens>"
+md-assess publish --db assessment.duckdb
+```
+
+Builds the reduced handoff (no source bodies, no query text), uploads it as a
+MotherDuck database named `md_assessment_<account>` (override with `--name`),
+and creates a Dive with the same dashboard over it, printing its URL. Re-running
+with the same `--title` updates the Dive in place; an existing database is left
+alone unless you pass `--replace`. `--keep-handoff <dir>` keeps the uploaded
+file so you can inspect exactly what was transferred. The Dive and the
+database live in your MotherDuck organization; share them with the
+organization's own controls.
 
 ## Snowflake privileges
 

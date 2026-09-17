@@ -8,9 +8,13 @@ The collector connects to the configured source warehouse. It does not implement
 telemetry, a MotherDuck connection, or automatic upload. Collection output stays
 in the local path supplied with `--output` and is created with mode `0600`.
 
-There is no upload command in the Public Preview. Any transfer to MotherDuck is a
-separate, manual action performed by the customer or prospect after reviewing the
-handoff contents.
+Collection never uploads anything. The only command that talks to MotherDuck is
+`md-assess publish`, which is separate and explicit: it requires a MotherDuck
+token in the environment, builds the reduced handoff described below, uploads
+*that* file as a new MotherDuck database, and creates a dashboard Dive over it.
+The private collection itself is never uploaded, and `publish` prints the
+handoff manifest (excluded columns, skipped tables) so the transfer can be
+reviewed. Use `--keep-handoff <dir>` to keep the uploaded file for inspection.
 
 `md-assess dashboard` serves the local dashboard from a server bound to
 `127.0.0.1` on a random path, attaches the assessment database read-only, and
