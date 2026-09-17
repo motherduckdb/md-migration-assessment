@@ -5,9 +5,10 @@
  *
  * The closure is the production dependency graph of dive/package.json,
  * resolved the way Node does (nearest node_modules walking up). Every package
- * contributes name, version, SPDX identifier and its license file text; a
- * package with neither a license file nor a `license` field fails the build,
- * because shipping it would be a compliance gap, not a warning.
+ * contributes name, version, SPDX identifier and the text of every license
+ * file it ships, including ones vendored in subdirectories. A package with no
+ * license text at all fails the build: an SPDX identifier alone is not a
+ * notice, and shipping it would be a compliance gap, not a warning.
  *
  * The Dive source uploaded by `md-assess publish` bundles none of these (they
  * are externals provided by the MotherDuck runtime), so this file covers the
@@ -46,12 +47,35 @@ function licenseId(p: Pkg): string {
   return '';
 }
 
+const LICENSE_FILE = /^(licen[cs]e|copying)(\.|$)/i;
+
+/**
+ * Every license file in the package, including ones vendored in
+ * subdirectories (victory-vendor ships d3 modules under lib-vendor/<pkg>/LICENSE).
+ * Nested node_modules belong to other packages and are resolved separately.
+ */
+function licenseFiles(dir: string, rel = ''): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
+    const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      found.push(...licenseFiles(dir, relPath));
+    } else if (LICENSE_FILE.test(entry.name)) {
+      found.push(relPath);
+    }
+  }
+  return found.sort();
+}
+
 function licenseText(dir: string): string | null {
-  const names = readdirSync(dir).filter((f) => /^(licen[cs]e|copying)(\.|$)/i.test(f));
-  if (names.length === 0) return null;
-  return names
-    .sort()
-    .map((f) => readFileSync(join(dir, f), 'utf-8').trim())
+  const files = licenseFiles(dir);
+  if (files.length === 0) return null;
+  return files
+    .map((f) => {
+      const text = readFileSync(join(dir, f), 'utf-8').trim();
+      return f.includes('/') ? `[${f}]\n${text}` : text;
+    })
     .join('\n\n');
 }
 
@@ -76,27 +100,25 @@ while (queue.length) {
 if (missing.length) throw new Error(`unresolved production dependencies:\n  ${missing.join('\n  ')}\nrun npm install in dive/`);
 
 const entries = [...seen.values()].sort((a, b) => a.pkg.name.localeCompare(b.pkg.name) || a.pkg.version.localeCompare(b.pkg.version));
-const noLicense: string[] = [];
+// An SPDX identifier alone is not a notice: every package must contribute the
+// actual license text it ships, or the build fails.
+const noText: string[] = [];
 const sections: string[] = [];
 for (const { dir, pkg } of entries) {
   const id = licenseId(pkg);
   const text = licenseText(dir);
-  if (!id && !text) {
-    noLicense.push(`${pkg.name}@${pkg.version}`);
+  if (!text) {
+    noText.push(`${pkg.name}@${pkg.version}${id ? ` (declares ${id})` : ''}`);
     continue;
   }
-  sections.push(
-    [
-      '-'.repeat(78),
-      `${pkg.name} ${pkg.version}`,
-      `License: ${id || '(see text below)'}`,
-      '',
-      text ?? `(no license file in the package; declared license: ${id})`,
-      '',
-    ].join('\n'),
+  sections.push(['-'.repeat(78), `${pkg.name} ${pkg.version}`, `License: ${id || '(see text below)'}`, '', text, ''].join('\n'));
+}
+if (noText.length) {
+  throw new Error(
+    `packages without license text (an SPDX declaration alone cannot ship):\n  ${noText.join('\n  ')}\n` +
+      'add the license text to the notices source or drop the dependency',
   );
 }
-if (noLicense.length) throw new Error(`packages without any license information (cannot ship):\n  ${noLicense.join('\n  ')}`);
 
 const summary = new Map<string, number>();
 for (const { pkg } of entries) summary.set(licenseId(pkg) || '(text only)', (summary.get(licenseId(pkg) || '(text only)') ?? 0) + 1);
