@@ -230,10 +230,15 @@ class DashboardServer:
 def serve(db_path: Path, *, port: int = 0, open_browser: bool = True) -> None:
     """Run the local dashboard until Ctrl+C."""
     server = DashboardServer(db_path, port=port)
+    # flush: the process then blocks in serve_forever, and a user who piped or
+    # redirected stdout would otherwise never see the URL
     if not server.bundle_present:
-        print(f"warning: {BUILD_HINT}", file=sys.stderr)
-    print(f"md-assess dashboard: {server.url}")
-    print(f"  reading {server.db_path} read-only over loopback; nothing leaves this machine. Ctrl+C to stop.")
+        print(f"warning: {BUILD_HINT}", file=sys.stderr, flush=True)
+    print(f"md-assess dashboard: {server.url}", flush=True)
+    print(
+        f"  reading {server.db_path} read-only over loopback; nothing leaves this machine. Ctrl+C to stop.",
+        flush=True,
+    )
     if open_browser:
         webbrowser.open(server.url)
     try:
