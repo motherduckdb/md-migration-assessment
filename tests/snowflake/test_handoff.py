@@ -231,3 +231,25 @@ def test_manifest_drop_partitions_are_disjoint(assessed_db, tmp_path):
         }
         assert not excluded & dropped, name
         assert not (excluded | dropped) & kept, name
+
+
+def test_handoff_classifies_every_aggregate_string_column(assessed_db, tmp_path):
+    """meta.* and report.* travel wholesale, so the identifiers they carry must be
+    disclosed like raw columns are, and no string column may travel unclassified."""
+    from md_migration_assessment.handoff import build_handoff
+
+    manifest = build_handoff(assessed_db, str(tmp_path / "handoff.duckdb"))
+    aggregate = {k: v for k, v in manifest["tables"].items() if not k.startswith("raw.")}
+    assert aggregate, "no meta/report tables in the manifest"
+    unclassified = {k: v["unclassified_included"] for k, v in aggregate.items() if v["unclassified_included"]}
+    assert unclassified == {}, f"classify these in handoff.AGGREGATE_*_COLUMNS: {unclassified}"
+
+    sizing = aggregate["report.sizing"]["sensitive_included"]
+    assert {"table_catalog", "table_schema", "table_name"} <= set(sizing["object_name"])
+    assert "sample_objects" in aggregate["report.feature_inventory"]["sensitive_included"]["object_name"]
+    assert "source_deployment" in aggregate["meta.collections"]["sensitive_included"]["object_name"]
+    assert "error_detail" in aggregate["meta.extract_runs"]["sensitive_included"]["comment"]
+    # tool-generated labels are not disclosed as sensitive
+    for entry in aggregate.values():
+        for cols in entry["sensitive_included"].values():
+            assert not ({"status", "observation_status", "tool_version"} & set(cols))

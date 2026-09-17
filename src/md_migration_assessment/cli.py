@@ -297,6 +297,10 @@ def publish(
         console.print(f"    [yellow]dropped as unexpected drift ({len(dropped)}):[/yellow] {', '.join(dropped)}")
     if manifest["skipped"]:
         console.print(f"    [yellow]raw tables skipped (no manifest entry):[/yellow] {', '.join(manifest['skipped'])}")
+    console.print(
+        "    [dim]Covers raw.*, meta.* and report.*: string columns are classified by name; "
+        "the remaining columns are counts, bytes, timestamps and statuses.[/dim]"
+    )
     console.print("    [dim]Per-column detail: --json, or inspect the kept handoff with `md-assess handoff`.[/dim]")
     console.print()
     console.print(
