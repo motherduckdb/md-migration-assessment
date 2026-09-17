@@ -13,6 +13,7 @@
  * local link reproduces a view.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { decodeState, encodeState, type StateBag } from './state-codec.ts';
 
 type Row = Record<string, unknown>;
 type QueryStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -130,26 +131,13 @@ export function useSQLQuery<TData = Row[]>(
 
 // ── useDiveState: URL-hash persisted state shared across call sites ───────────
 
-type StateBag = Record<string, unknown>;
 const listeners = new Set<() => void>();
-let bag: StateBag = readHash();
-
-function readHash(): StateBag {
-  try {
-    const raw = window.location.hash.replace(/^#/, '');
-    if (!raw) return {};
-    const params = new URLSearchParams(raw);
-    const s = params.get('s');
-    return s ? (JSON.parse(decodeURIComponent(s)) as StateBag) : {};
-  } catch {
-    return {};
-  }
-}
+let bag: StateBag = decodeState(window.location.hash);
 
 function writeHash(next: StateBag) {
   bag = next;
-  const keys = Object.keys(next);
-  const hash = keys.length ? `#s=${encodeURIComponent(JSON.stringify(next))}` : '';
+  const encoded = encodeState(next);
+  const hash = encoded ? `#${encoded}` : '';
   try {
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`);
   } catch {
@@ -159,7 +147,7 @@ function writeHash(next: StateBag) {
 }
 
 window.addEventListener('hashchange', () => {
-  bag = readHash();
+  bag = decodeState(window.location.hash);
   listeners.forEach((l) => l());
 });
 

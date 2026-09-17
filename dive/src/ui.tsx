@@ -31,6 +31,8 @@ export const CSS = `
   .mda .feat-zero-tick { position: absolute; left: 0; top: -2px; bottom: -2px; width: 3px; background: #9aa0a6; }
   .mda .feat-unknown { background: repeating-linear-gradient(45deg, #e9e9ee 0 4px, #8a8a96 4px 6px); display: flex; align-items: center; justify-content: center; }
   .mda .feat-unknown-label { font-size: 10px; font-weight: 700; color: #2b2b33; background: rgba(255,255,255,.85); padding: 0 6px; border-radius: 3px; line-height: 12px; }
+  .mda .feat-nr { background: #e3e5ea; border: 1px solid #c9c9d1; box-sizing: border-box; display: flex; align-items: center; justify-content: center; }
+  .mda .feat-nr-label { font-size: 10px; font-weight: 600; color: #5d6270; line-height: 12px; }
   .mda .feat-value { text-align: right; font-variant-numeric: tabular-nums; }
   .mda .feat-lb { color: ${WARN_INK}; font-weight: 600; }
   .mda .bar-click { cursor: pointer; }

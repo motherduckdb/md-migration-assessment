@@ -1,10 +1,12 @@
 // 5. Migration-risk panel. Left: Snowflake-specific SQL constructs as a share of
 // the queries the server-side heuristic scanned (query text was never
 // collected; these are frequency signals). Right: the feature inventory with
-// the collector's observed / observed-zero / unknown states kept distinct:
+// the collector's four observation states kept distinct:
 //   observed       → solid bar proportional to count (symlog), "≥" when lower_bound
 //   observed_zero  → dashed outline with a zero tick, labelled "0 observed"
 //   unknown        → full-width hatched bar, reason on hover, no number
+//   not_requested  → flat grey bar labelled "not requested": the collection
+//                    profile did not include the source extract; no number
 import { useSQLQuery } from '@motherduck/react-sql-query';
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { N, S, formatCount, formatInt, formatPct } from '../format';
@@ -90,6 +92,22 @@ function FeatureRow({ f, scale }: { f: Feature; scale: (v: number) => number }) 
       </div>
     );
   }
+  if (f.status === 'not_requested') {
+    const title = 'NOT REQUESTED — the collection profile did not include the source extract.' +
+      (f.source_extractor ? `\nextractor: ${f.source_extractor}` : '') + (f.note ? `\n${f.note}` : '') +
+      '\nNot measured. This is not a zero; re-collect with --profile standard to measure it.';
+    return (
+      <div className="feat-row" title={title}>
+        {name}
+        <div className="feat-bar">
+          <div className="feat-fill feat-nr" style={{ width: '100%' }}>
+            <span className="feat-nr-label">not requested · profile</span>
+          </div>
+        </div>
+        <span className="feat-value" style={{ color: MUTED, fontStyle: 'italic' }}>not requested</span>
+      </div>
+    );
+  }
   if (f.status === 'observed_zero') {
     const title = 'OBSERVED ZERO — the extractor ran and found none.' + (f.source_extractor ? `\nextractor: ${f.source_extractor}` : '') + (f.note ? `\n${f.note}` : '');
     return (
@@ -148,17 +166,22 @@ function FeatureInventory() {
         <span><i style={{ display: 'inline-block', width: 14, height: 10, background: '#3b6ea5', borderRadius: 2, verticalAlign: -1 }} /> observed</span>
         <span><i style={{ display: 'inline-block', width: 14, height: 10, border: '1.5px solid #9aa0a6', borderRadius: 2, verticalAlign: -1, boxSizing: 'border-box' }} /> observed zero</span>
         <span><i style={{ display: 'inline-block', width: 14, height: 10, background: 'repeating-linear-gradient(45deg, #e9e9ee 0 3px, #8a8a96 3px 5px)', borderRadius: 2, verticalAlign: -1 }} /> unknown (hover for reason)</span>
+        {feats.some((f) => f.status === 'not_requested') ? (
+          <span><i style={{ display: 'inline-block', width: 14, height: 10, background: '#e3e5ea', border: '1px solid #c9c9d1', borderRadius: 2, verticalAlign: -1, boxSizing: 'border-box' }} /> not requested by the profile</span>
+        ) : null}
         <span><b>≥</b> lower bound</span>
       </div>
       {[...byCat.entries()].map(([cat, list]) => {
         const unknown = list.filter((f) => f.status === 'unknown').length;
         const observed = list.filter((f) => f.status === 'observed').length;
+        const zero = list.filter((f) => f.status === 'observed_zero').length;
+        const notRequested = list.filter((f) => f.status === 'not_requested').length;
         return (
           <section key={cat} style={{ marginBottom: 10 }}>
             <h4 style={{ display: 'flex', justifyContent: 'space-between', margin: '6px 0 3px', fontSize: 12, textTransform: 'uppercase', letterSpacing: '.03em', borderBottom: '1px solid #e5e5e5', paddingBottom: 2 }}>
               <span>{cat.replaceAll('_', ' ')}</span>
               <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: MUTED }}>
-                {observed} observed · {list.length - observed - unknown} zero · {unknown} unknown
+                {observed} observed · {zero} zero · {unknown} unknown{notRequested ? ` · ${notRequested} not requested` : ''}
               </span>
             </h4>
             {list.map((f) => (
