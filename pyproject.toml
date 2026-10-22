@@ -31,6 +31,7 @@ snowflake = [
     # [pandas] is required even though we never materialize pandas objects:
     # the connector's fetch_arrow_all() gates on pandas being installed.
     "snowflake-connector-python[pandas]>=4.7.1",  # <4.7.1: TLS hostname verification flaw (GHSA, critical)
+    "certifi>=2026.10.19",  # <2026.10.19: still trusts the compromised eMudhra/emSign root
 ]
 dev = [
     "pytest>=8",
