@@ -1,0 +1,347 @@
+"""Databricks adapter, end to end against a synthetic Unity Catalog."""
+
+from __future__ import annotations
+
+import json
+
+import duckdb
+import pyarrow as pa
+import pytest
+
+from fake_databricks import FakeDatabricks
+
+from md_migration_assessment.collect.extractor import Profile
+from md_migration_assessment.collect.runner import Scope, run_collection
+from md_migration_assessment.db import open_output
+from md_migration_assessment.handoff import build_handoff
+from md_migration_assessment.report import build_report
+from md_migration_assessment.sources import SOURCE_KINDS, get_adapter
+from md_migration_assessment.sources.base import Connection, SourceAdapter
+from md_migration_assessment.sources.databricks import ADAPTER
+from md_migration_assessment.sources.databricks.connection import (
+    DatabricksConfig,
+    DatabricksSource,
+    detail_row,
+    detail_targets_sql,
+)
+from md_migration_assessment.sources.databricks.manifest import (
+    TABLE_DETAILS_COMMAND,
+    load_sql_path,
+)
+
+
+def runs(con, coll):
+    out = {}
+    for name, status, used, scope, detail in con.execute(
+        "SELECT extractor, status, source_used, actual_scope, error_detail "
+        "FROM meta.extract_runs WHERE collection_id = ?", [str(coll.collection_id)],
+    ).fetchall():
+        out[name] = dict(status=status, source_used=used, actual_scope=scope, detail=detail)
+    return out
+
+
+def features(con, coll):
+    return {
+        r[0]: (r[1], r[2], r[3]) for r in con.execute(
+            "SELECT feature, observation_status, count, sample_objects "
+            "FROM report.feature_inventory WHERE collection_id = ?",
+            [str(coll.collection_id)],
+        ).fetchall()
+    }
+
+
+# ── contract ─────────────────────────────────────────────────────────────
+
+
+def test_registry_and_protocols():
+    assert "databricks" in SOURCE_KINDS
+    assert get_adapter("databricks") is ADAPTER
+    assert isinstance(ADAPTER, SourceAdapter)
+    assert isinstance(FakeDatabricks(), Connection)
+
+
+def test_every_extractor_sql_resource_loads_and_has_scope_hook():
+    for ex in ADAPTER.extractors:
+        for s in ex.sources:
+            if hasattr(s, "sql"):
+                sql = load_sql_path(s.sql)
+                assert "{scope_filter}" in sql, s.sql
+
+
+def test_storage_credentials_never_selects_the_secret():
+    def select_list(path):
+        sql = "\n".join(
+            ln for ln in load_sql_path(path).splitlines() if not ln.lstrip().startswith("--")
+        )
+        return {c.strip() for c in sql.split("FROM")[0].removeprefix("SELECT").split(",")}
+
+    assert "credential" not in select_list("metastore/storage_credentials.sql")
+    assert not {"connection_options", "url"} & select_list("metastore/connections.sql")
+
+
+@pytest.mark.parametrize("msg,kind", [
+    ("[INSUFFICIENT_PERMISSIONS] User does not have USE CATALOG on Catalog 'x'", "unavailable"),
+    ("PERMISSION_DENIED: metastore admin required", "unavailable"),
+    ("[TABLE_OR_VIEW_NOT_FOUND] The table or view `a`.`b` cannot be found", "unavailable"),
+    ("User does not have SELECT privilege on table", "unavailable"),
+    ("[PARSE_SYNTAX_ERROR] Syntax error at or near 'FROM'", "failed"),
+    ("connection reset by peer", "failed"),
+])
+def test_classify_error(msg, kind):
+    assert ADAPTER.classify_error(RuntimeError(msg)) == kind
+
+
+# ── collection ───────────────────────────────────────────────────────────
+
+
+def test_lite_collection_is_complete_and_walks_catalogs(out_db):
+    conn = FakeDatabricks()
+    coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
+    st = runs(out_db, coll)
+    assert {e.name for e in ADAPTER.extractors} == set(st)
+    assert all(r["status"] == "complete" for r in st.values()), st
+    assert st["tables"]["source_used"] == "information_schema"
+    assert json.loads(st["tables"]["actual_scope"]) == ["assess_lab", "workspace"]
+    assert "role-visibility bound" in st["tables"]["detail"]
+    assert st["table_details"]["source_used"] == "describe_detail"
+    row = out_db.execute(
+        "SELECT source_kind, source_deployment, source_version, source_region "
+        "FROM meta.collections").fetchone()
+    assert row == ("databricks", "dbc-test.cloud.databricks.com", "2026.43", "aws:us-east-2")
+    # information_schema's own views never land
+    assert out_db.execute(
+        "SELECT count(*) FROM raw.tables WHERE table_schema = 'information_schema'"
+    ).fetchone()[0] == 0
+    # the secret-bearing columns were never selected
+    cols = {r[0] for r in out_db.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'raw' AND table_name IN ('storage_credentials', 'connections')"
+    ).fetchall()}
+    assert not {"credential", "connection_options", "url"} & cols
+
+
+def test_signals_count_the_seeded_features(out_db):
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    build_report(out_db)
+    f = features(out_db, coll)
+    expected = {
+        "managed_iceberg_tables": 1, "uniform_iceberg_tables": 1, "external_tables": 1,
+        "shallow_clones": 1, "materialized_views": 1, "streaming_tables": 0,
+        "partitioned_tables": 1, "liquid_clustering": 1, "deletion_vectors": 1,
+        "change_data_feed": 1, "column_mapping": 1, "identity_columns": 1,
+        "generated_columns": 1, "variant_columns": 1, "complex_type_columns": 1,
+        "python_udfs": 1, "sql_udfs": 3, "column_masks": 1, "row_filters": 1,
+        "table_tags": 1, "column_tags": 1, "informational_constraints": 2,
+        "volumes": 1, "federation_connections": 1, "delta_shares": 0,
+        "table_detail_errors": 0, "non_delta_formats": 0,
+    }
+    for name, n in expected.items():
+        status, count, _ = f[name]
+        if n:
+            assert (status, count) == ("observed", n), (name, f[name])
+        elif name == "delta_shares":
+            # metastore-level GlobalQuery: not flagged visibility-bound (v1 gap)
+            assert (status, count) == ("observed_zero", 0), (name, f[name])
+        else:
+            # zero from a visibility-bound listing is missing evidence, not zero
+            assert (status, count) == ("unknown", None), (name, f[name])
+    # hidden MV furniture is not counted as user tables
+    assert f["materialized_views"][2] == ["assess_lab.marts.daily_revenue"]
+    assert f["hive_metastore_tables"][0] == "unknown"
+
+
+def test_scope_filters_sql_and_command_output(out_db):
+    conn = FakeDatabricks()
+    scope = Scope.parse(["assess_lab.core"], ADAPTER.scope)
+    coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE, scope=scope)
+    st = runs(out_db, coll)
+    assert st["tables"]["status"] == "complete"
+    names = {r[0] for r in out_db.execute("SELECT table_name FROM raw.tables").fetchall()}
+    assert names == {"customers", "products", "orders", "order_items"}
+    details = {r[0] for r in out_db.execute(
+        "SELECT table_catalog || '.' || table_schema FROM raw.table_details").fetchall()}
+    assert details == {"assess_lab.core"}
+    assert "filtered client-side" in st["table_details"]["detail"]
+    # the out-of-scope catalog is never walked
+    assert not any("`workspace`" in q for q in conn.queries)
+
+
+def test_scope_entries_are_case_folded_to_unity_catalog_lower_case():
+    scope = Scope.parse(["Assess_Lab"], ADAPTER.scope)
+    assert scope.databases == frozenset({"assess_lab"})
+
+
+def test_privilege_gap_on_one_catalog_is_partial(out_db):
+    conn = FakeDatabricks(denied_catalogs={"workspace"})
+    coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
+    row = runs(out_db, coll)["tables"]
+    assert row["status"] == "partial"
+    assert json.loads(row["actual_scope"]) == ["assess_lab"]
+
+
+def test_unavailable_metastore_view_reports_unknown_not_zero(out_db):
+    conn = FakeDatabricks(denied_views={"connections"})
+    coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
+    assert runs(out_db, coll)["connections"]["status"] == "unavailable"
+    build_report(out_db)
+    assert features(out_db, coll)["federation_connections"][0] == "unknown"
+
+
+def test_detail_errors_are_kept_per_table(out_db):
+    conn = FakeDatabricks(detail_errors={
+        ("assess_lab", "core", "customers"): "[INSUFFICIENT_PERMISSIONS] no SELECT",
+    })
+    coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
+    assert runs(out_db, coll)["table_details"]["status"] == "complete"
+    build_report(out_db)
+    assert features(out_db, coll)["table_detail_errors"][1] == 1
+
+
+# ── report facts ─────────────────────────────────────────────────────────
+
+
+def test_readable_in_place_paths(out_db):
+    run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    build_report(out_db)
+    paths = dict(out_db.execute(
+        "SELECT table_schema || '.' || table_name, read_path FROM report.readable_in_place "
+        "WHERE table_catalog = 'assess_lab'").fetchall())
+    assert paths["core.order_items"] == "uc_iceberg_rest"      # UniForm
+    assert paths["marts.region_targets"] == "uc_iceberg_rest"  # managed Iceberg
+    assert paths["raw.ext_clicks"] == "delta_scan"             # external Delta
+    assert paths["core.customers"] == "enable_uniform_or_copy"
+    assert paths["marts.customer_ltv"] == "recreate"
+    assert paths["marts.daily_revenue"] == "recreate"
+    assert not any(k.startswith("marts.__materialization") for k in paths)
+    schemes = {r[0] for r in out_db.execute(
+        "SELECT DISTINCT storage_scheme FROM report.readable_in_place "
+        "WHERE storage_scheme IS NOT NULL").fetchall()}
+    assert schemes == {"s3"}
+
+
+def test_sizing_joins_details_and_flags_system_furniture(out_db):
+    run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    build_report(out_db)
+    rows = {r[0]: r[1:] for r in out_db.execute(
+        "SELECT table_name, bytes, num_files, is_system, details_extract_status "
+        "FROM report.sizing").fetchall()}
+    assert rows["orders"] == (1000, 4, False, "complete")
+    assert rows["__materialization_mat_daily_revenue_1"][2] is True
+    assert "customer_ltv" not in rows  # plain views carry no storage
+
+
+def test_fact_relations_exist_without_evidence(out_db):
+    conn = FakeDatabricks(denied_views={"tables"})
+    run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
+    build_report(out_db)
+    for rel in ("report.sizing", "report.readable_in_place"):
+        assert out_db.execute(f"SELECT count(*) FROM {rel}").fetchone()[0] >= 0
+
+
+# ── handoff ──────────────────────────────────────────────────────────────
+
+
+def test_handoff_strips_source_bodies(tmp_path):
+    src = str(tmp_path / "private.duckdb")
+    con = open_output(src)
+    run_collection(con, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    build_report(con)
+    con.close()
+    manifest = build_handoff(src, str(tmp_path / "handoff.duckdb"))
+    assert manifest["tables"]["raw.views"]["excluded_columns"] == ["view_definition"]
+    assert manifest["tables"]["raw.routines"]["excluded_columns"] == ["routine_definition"]
+    assert manifest["tables"]["raw.table_details"]["dropped_unexpected"] == []
+
+
+# ── connection (no network) ──────────────────────────────────────────────
+
+
+def test_config_from_env(monkeypatch):
+    for k in ("DATABRICKS_TOKEN", "DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET",
+              "DATABRICKS_HTTP_PATH", "DATABRICKS_DETAIL_MAX_TABLES"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://dbc-test.cloud.databricks.com/")
+    monkeypatch.setenv("DATABRICKS_WAREHOUSE_ID", "abc123")
+    cfg = DatabricksConfig.from_env()
+    assert cfg.host == "dbc-test.cloud.databricks.com"
+    assert cfg.http_path == "/sql/1.0/warehouses/abc123"
+    assert cfg.auth_mode == "u2m"
+    assert cfg.connect_kwargs()["auth_type"] == "databricks-oauth"
+    monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-test")
+    assert DatabricksConfig.from_env().connect_kwargs()["access_token"] == "dapi-test"
+
+
+def test_config_requires_host_and_warehouse(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    with pytest.raises(ValueError, match="DATABRICKS_HOST"):
+        DatabricksConfig.from_env()
+    monkeypatch.setenv("DATABRICKS_HOST", "h")
+    monkeypatch.delenv("DATABRICKS_HTTP_PATH", raising=False)
+    monkeypatch.delenv("DATABRICKS_WAREHOUSE_ID", raising=False)
+    with pytest.raises(ValueError, match="WAREHOUSE_ID"):
+        DatabricksConfig.from_env()
+
+
+def test_detail_row_flattens_describe_detail():
+    row = detail_row("c", "s", "t", {
+        "format": "delta", "location": "", "numFiles": 2, "sizeInBytes": 10,
+        "partitionColumns": ["d"], "clusteringColumns": [],
+        "tableFeatures": ["deletionVectors", "appendOnly"],
+        "properties": [("delta.universalFormat.enabledFormats", "iceberg"),
+                       ("delta.enableDeletionVectors", "true")],
+    })
+    assert row["location"] is None
+    assert row["partition_columns"] == "d" and row["clustering_columns"] is None
+    assert row["table_features"] == "appendOnly,deletionVectors"
+    assert row["uniform_formats"] == "iceberg" and row["dv_enabled"] is True
+
+
+class _Cursor:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql):
+        self.owner.sql.append(sql)
+        self.sql = sql
+
+    def fetchall_arrow(self):
+        if self.sql.startswith("SELECT table_catalog"):
+            return pa.table({"table_catalog": ["c"] * 3, "table_schema": ["s"] * 3,
+                             "table_name": ["a", "b", "c"]})
+        if "`b`" in self.sql:
+            raise RuntimeError("[INSUFFICIENT_PERMISSIONS] nope")
+        return pa.Table.from_pylist([{"format": "delta", "numFiles": 1, "sizeInBytes": 5,
+                                      "properties": []}])
+
+
+class _DbApi:
+    def __init__(self):
+        self.sql = []
+
+    def cursor(self):
+        return _Cursor(self)
+
+    def close(self):
+        pass
+
+
+def test_source_command_caps_and_isolates_per_table_errors():
+    api = _DbApi()
+    src = DatabricksSource(api, detail_max_tables=2)
+    table, truncated = src.command(TABLE_DETAILS_COMMAND)
+    assert truncated is True
+    assert table.column("table_name").to_pylist() == ["a", "b"]
+    assert table.column("detail_error").to_pylist()[1].startswith("[INSUFFICIENT")
+    assert "LIMIT 3" in api.sql[0]
+    assert "DESCRIBE DETAIL `c`.`s`.`a`" in api.sql
+
+
+def test_detail_targets_skip_views_and_hidden_tables():
+    sql = detail_targets_sql(10)
+    assert "'VIEW'" not in sql and "__materialization_" in sql and "'samples'" in sql

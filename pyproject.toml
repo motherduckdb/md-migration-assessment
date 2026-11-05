@@ -33,9 +33,14 @@ snowflake = [
     "snowflake-connector-python[pandas]>=4.7.1",  # <4.7.1: TLS hostname verification flaw (GHSA, critical)
     "certifi>=2026.10.19",  # <2026.10.19: still trusts the compromised eMudhra/emSign root
 ]
+databricks = [
+    "databricks-sql-connector[pyarrow]>=4.0",
+    "databricks-sdk>=0.50",  # OAuth M2M (service principal) auth
+]
 dev = [
     "pytest>=8",
     "md-migration-assessment[snowflake]",
+    "md-migration-assessment[databricks]",
 ]
 
 [project.urls]
