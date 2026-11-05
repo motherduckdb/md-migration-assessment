@@ -107,6 +107,61 @@ SIGNALS: list[Signal] = [
     _plain("hive_metastore_tables", "platform", "hive_metastore_tables",
            "table_name IS NOT NULL",
            "table_catalog || '.' || table_schema || '.' || table_name"),
+    # ── compute, jobs, pipelines, serving (system tables) ──────────────
+    _plain("sql_warehouses", "platform", "warehouses", "delete_time IS NULL",
+           "warehouse_name || ' (' || coalesce(warehouse_type, '?') || ' '"
+           " || coalesce(warehouse_size, '?') || ')'"),
+    _plain("classic_clusters", "platform", "clusters",
+           "delete_time IS NULL AND coalesce(cluster_source, '') NOT IN ('PIPELINE', 'PIPELINE_MAINTENANCE')",
+           "cluster_name || ' (' || coalesce(cluster_source, '?') || ')'"),
+    _plain("lakeflow_jobs", "platform", "jobs", "delete_time IS NULL", "job_name"),
+    _plain("scheduled_jobs", "platform", "jobs",
+           "delete_time IS NULL AND coalesce(trigger_type, '') NOT IN ('', 'MANUAL') "
+           "AND NOT coalesce(paused, false)",
+           "job_name || ' (' || trigger_type || ')'"),
+    _plain("lakeflow_pipelines", "platform", "pipelines", "delete_time IS NULL",
+           "pipeline_name || ' (' || coalesce(pipeline_type, '?') || ')'"),
+    _plain("continuous_pipelines", "platform", "pipelines",
+           "delete_time IS NULL AND coalesce(continuous, false)", "pipeline_name"),
+    _plain("model_serving_endpoints", "platform", "served_entities",
+           "endpoint_delete_time IS NULL", "endpoint_name"),
+    _plain("pipeline_or_job_written_tables", "platform", "table_lineage_rollup",
+           "target_table_full_name IS NOT NULL AND entity_type IN ('JOB', 'PIPELINE') "
+           "AND split_part(target_table_full_name, '.', 1) NOT IN " + _SYSTEM_CATALOGS,
+           "target_table_full_name || ' <- ' || entity_type"),
+    _plain("table_lineage_edges", "platform", "table_lineage_rollup",
+           "source_table_full_name IS NOT NULL AND target_table_full_name IS NOT NULL "
+           "AND split_part(target_table_full_name, '.', 1) NOT IN " + _SYSTEM_CATALOGS,
+           "source_table_full_name || ' -> ' || target_table_full_name"),
+    Signal(
+        name="dbu_usage", category="platform", source_extractor="billing_usage_daily",
+        sql=(
+            "SELECT coalesce(round(sum(usage_quantity)), 0)::BIGINT AS n,\n"
+            "       coalesce(list(DISTINCT billing_origin_product ORDER BY billing_origin_product), [])\n"
+            "           AS sample_objects\n"
+            "FROM raw.billing_usage_daily WHERE collection_id = '{cid}'"
+        ),
+    ),
+    Signal(
+        name="workspace_services_used", category="platform",
+        source_extractor="workspace_feature_usage",
+        sql=(
+            "SELECT count(DISTINCT service_name)::BIGINT AS n,\n"
+            "       coalesce(list(DISTINCT service_name ORDER BY service_name), [])\n"
+            "           AS sample_objects\n"
+            "FROM raw.workspace_feature_usage WHERE collection_id = '{cid}'"
+        ),
+    ),
+    Signal(
+        name="predictive_optimization_operations", category="table_layout",
+        source_extractor="predictive_optimization_rollup",
+        sql=(
+            "SELECT coalesce(sum(n_operations), 0)::BIGINT AS n,\n"
+            "       coalesce(list(DISTINCT operation_type ORDER BY operation_type), [])\n"
+            "           AS sample_objects\n"
+            "FROM raw.predictive_optimization_rollup WHERE collection_id = '{cid}'"
+        ),
+    ),
     # ── workload ───────────────────────────────────────────────────────
     # statements in the history window; samples are the statement types
     Signal(
@@ -123,13 +178,5 @@ SIGNALS: list[Signal] = [
 
 PLANNED_SIGNALS: list[PlannedSignal] = [
     PlannedSignal("delta_sharing_recipients", "platform",
-                  "share recipients need SHOW RECIPIENTS (metastore admin); not collected in v1"),
-    PlannedSignal("jobs_and_pipelines", "platform",
-                  "system.lakeflow jobs/pipelines not collected in v1"),
-    PlannedSignal("classic_cluster_workloads", "platform",
-                  "system.compute clusters and Spark workloads not collected in v1"),
-    PlannedSignal("spend_profile", "platform",
-                  "system.billing usage/list prices not collected in v1"),
-    PlannedSignal("table_lineage", "platform",
-                  "system.access.table_lineage not collected in v1"),
+                  "share recipients need SHOW RECIPIENTS (metastore admin); not collected"),
 ]

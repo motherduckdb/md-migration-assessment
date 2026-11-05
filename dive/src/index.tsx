@@ -24,6 +24,7 @@ import { ConcurrencyPanel } from './panels/concurrency';
 import { RiskPanel } from './panels/risk';
 import { IngestionPanel } from './panels/ingestion';
 import { CSS, Skeleton, Warn } from './ui';
+import { useVendor } from './vendor';
 
 // `md-assess publish` rewrites the path to the uploaded database; the alias is
 // what every query in ./queries.ts uses and must stay `assessment`.
@@ -36,6 +37,7 @@ export const REQUIRED_DATABASES = [
 ];
 
 function Header() {
+  const v = useVendor();
   const coll = useSQLQuery(Q.collection());
   const win = useSQLQuery(Q.window());
   const c = (Array.isArray(coll.data) ? coll.data : [])[0] ?? {};
@@ -43,15 +45,15 @@ function Header() {
   const account = [S(c.source_deployment), S(c.source_region)].filter(Boolean).join(' · ') || '(account not recorded)';
   return (
     <header>
-      <h1 style={{ fontSize: 22, margin: '4px 0 6px', fontWeight: 600 }}>Snowflake → MotherDuck migration assessment</h1>
+      <h1 style={{ fontSize: 22, margin: '4px 0 6px', fontWeight: 600 }}>{v.name} → MotherDuck migration assessment</h1>
       {coll.isLoading && !coll.data ? (
         <Skeleton height={60} />
       ) : (
         <p style={{ margin: '0 0 8px', maxWidth: 1200 }}>
-          Read-only dashboard over the <code>md-assess</code> {S(c.tool_version)} collection (profile {S(c.profile) || 'standard'}) of Snowflake account <strong>{account}</strong>
+          Read-only dashboard over the <code>md-assess</code> {S(c.tool_version)} collection (profile {S(c.profile) || 'standard'}) of {v.account} <strong>{account}</strong>
           {c.started_at ? <>, collected {S(c.started_at)}</> : null}. History window:{' '}
-          <strong>{w.window_start ? `${S(w.window_start)} → ${S(w.window_end)}` : 'unknown'}</strong> ({N(c.history_days) || '?'} days requested). Every count excludes Snowflake system objects unless the system-objects toggle is on. Counts marked <strong>≥</strong> are lower bounds limited by what the collecting role could see. Missing evidence is never shown as zero:{' '}
-          <span className="chip chip-unknown">unknown</span> is a distinct state from <span className="chip chip-zero">observed zero</span>. Credits are Snowflake credits (no rate is recorded, so no dollar figure is implied); latencies are server-side elapsed time.
+          <strong>{w.window_start ? `${S(w.window_start)} → ${S(w.window_end)}` : 'unknown'}</strong> ({N(c.history_days) || '?'} days requested). Every count excludes {v.name} system objects unless the system-objects toggle is on. Counts marked <strong>≥</strong> are lower bounds limited by what the collecting role could see. Missing evidence is never shown as zero:{' '}
+          <span className="chip chip-unknown">unknown</span> is a distinct state from <span className="chip chip-zero">observed zero</span>. {v.credits}; latencies are server-side elapsed time.
         </p>
       )}
       <Warn>This dashboard names real databases, schemas, tables, warehouses and tools. Share it only with people entitled to see them.</Warn>
@@ -77,6 +79,7 @@ function MultiSelect({ label, options, value, onChange }: { label: string; optio
 }
 
 export default function AssessmentDashboard() {
+  const vendor = useVendor();
   const [wh, setWh] = useDiveState<string[]>('wh', []);
   const [range, setRange] = useDiveState<DateRange>('range', null);
   const [db, setDb] = useDiveState<string | null>('db', null);
@@ -131,7 +134,7 @@ export default function AssessmentDashboard() {
             </select>
           </label>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <input type="checkbox" checked={Boolean(sys)} onChange={(e) => setSys(e.target.checked || undefined)} /> show Snowflake system objects (SNOWFLAKE shared database)
+            <input type="checkbox" checked={Boolean(sys)} onChange={(e) => setSys(e.target.checked || undefined)} /> {vendor.systemObjects}
           </label>
           <span style={{ color: MUTED, fontSize: 12 }}>
             {range ? <>dates <strong>{range.start} → {range.end}</strong></> : 'all dates'}

@@ -10,9 +10,10 @@ is not in ``information_schema``; it comes from ``DESCRIBE DETAIL``, run
 per table by the connection and returned as one client-materialized
 command result (:data:`TABLE_DETAILS_COMMAND`).
 
-v1 covers the catalog. v2 adds the workload rollup over
-``system.query.history`` (standard profile). Billing, lineage, jobs and
-pipelines are still planned signals.
+v1 covers the catalog. v2 adds the standard-profile system tables:
+query workload aggregates, compute (warehouses, clusters), billing at list
+price, Lakeflow jobs and pipelines, table lineage, model serving, audit
+service usage and predictive optimization, plus a grants summary.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from ...privacy import PrivacyClass
 #   DESCRIBE DETAIL table details.
 # v2: query_workload_rollup (system.query.history aggregate, standard) and
 #   hive_metastore_tables (SHOW TABLES walk of the legacy Hive metastore).
+#   v2 also adds the system-table extracts (compute, billing, lakeflow,
+#   lineage, serving, audit, predictive optimization) and grants_summary.
 RAW_SCHEMA_VERSION = 2
 
 #: meta.extract_runs.source_used labels for this adapter's strategies.
@@ -103,6 +106,24 @@ def _metastore(
         scope_columns=scope or {},
         required_privilege=_PRIV_METASTORE,
         sensitive_fields=sensitive,
+    )
+
+
+def _system(name: str, view: str, sensitive: dict, *, category: str = "workload",
+            window: bool = True) -> Extractor:
+    """A standard-profile aggregate over one Databricks system table."""
+    schema = view.split(".")[1]
+    return Extractor(
+        name=name,
+        category=category,
+        min_profile=Profile.STANDARD,
+        sources=(GlobalQuery(
+            f"system/{name}.sql", SYSTEM_TABLES,
+            min_profile=Profile.STANDARD, source_view=view,
+        ),),
+        required_privilege=f"USE CATALOG system + USE SCHEMA system.{schema} + SELECT on {view}",
+        sensitive_fields=sensitive,
+        **({"window_days": 30, "window_from_history_days": True} if window else {}),
     )
 
 
@@ -237,18 +258,51 @@ EXTRACTORS: list[Extractor] = [
         "share_owner": PrivacyClass.USER_IDENTITY,
         "comment": PrivacyClass.COMMENT,
     }),
-    # ── workload (standard profile: system tables need explicit grants) ──
-    Extractor(
-        name="query_workload_rollup",
-        category="workload",
-        min_profile=Profile.STANDARD,
-        sources=(GlobalQuery(
-            "system/query_workload_rollup.sql", SYSTEM_TABLES,
-            min_profile=Profile.STANDARD, source_view="system.query.history",
-        ),),
-        required_privilege="USE CATALOG system + USE SCHEMA system.query + SELECT on system.query.history",
-        window_days=30,
-        window_from_history_days=True,
-        sensitive_fields={"warehouse_id": PrivacyClass.OBJECT_NAME},
-    ),
+    _metastore("grants_summary", {}),
+    # ── standard profile: system tables (need explicit grants) ─────────
+    _system("warehouses", "system.compute.warehouses", {
+        "warehouse_id": PrivacyClass.OBJECT_NAME,
+        "warehouse_name": PrivacyClass.OBJECT_NAME,
+    }, category="features", window=False),
+    _system("clusters", "system.compute.clusters", {
+        "cluster_id": PrivacyClass.OBJECT_NAME,
+        "cluster_name": PrivacyClass.OBJECT_NAME,
+    }, category="features", window=False),
+    _system("jobs", "system.lakeflow.jobs", {
+        "job_id": PrivacyClass.OBJECT_NAME,
+        "job_name": PrivacyClass.OBJECT_NAME,
+    }, category="features", window=False),
+    _system("pipelines", "system.lakeflow.pipelines", {
+        "pipeline_id": PrivacyClass.OBJECT_NAME,
+        "pipeline_name": PrivacyClass.OBJECT_NAME,
+    }, category="features", window=False),
+    _system("served_entities", "system.serving.served_entities", {
+        "endpoint_name": PrivacyClass.OBJECT_NAME,
+        "served_entity_name": PrivacyClass.OBJECT_NAME,
+        "entity_name": PrivacyClass.OBJECT_NAME,
+    }, category="features", window=False),
+    _system("query_workload_rollup", "system.query.history", {
+        "warehouse_id": PrivacyClass.OBJECT_NAME,
+    }),
+    _system("query_concurrency", "system.query.history", {
+        "warehouse_id": PrivacyClass.OBJECT_NAME,
+    }),
+    _system("client_app_fingerprints", "system.query.history", {}),
+    _system("query_dialect_constructs", "system.query.history", {}),
+    _system("billing_usage_daily", "system.billing.usage", {
+        "warehouse_id": PrivacyClass.OBJECT_NAME,
+    }),
+    _system("job_run_rollup", "system.lakeflow.job_run_timeline", {
+        "job_id": PrivacyClass.OBJECT_NAME,
+    }),
+    _system("pipeline_update_rollup", "system.lakeflow.pipeline_update_timeline", {
+        "pipeline_id": PrivacyClass.OBJECT_NAME,
+    }),
+    _system("table_lineage_rollup", "system.access.table_lineage", {
+        "source_table_full_name": PrivacyClass.OBJECT_NAME,
+        "target_table_full_name": PrivacyClass.OBJECT_NAME,
+    }, category="features"),
+    _system("workspace_feature_usage", "system.access.audit", {}),
+    _system("predictive_optimization_rollup",
+            "system.storage.predictive_optimization_operations_history", {}),
 ]

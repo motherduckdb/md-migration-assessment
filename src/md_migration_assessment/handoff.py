@@ -206,7 +206,7 @@ AGGREGATE_LABEL_COLUMNS: frozenset[str] = frozenset({
     "shape_key", "query_parameterized_hash_version",
     # Databricks fact labels: vendor format names and tool-chosen paths/texts
     "data_source_format", "uniform_formats", "storage_scheme", "read_path",
-    "warning", "detail",
+    "warning", "detail", "billing_origin_product",
 })
 _LABEL_SUFFIXES = ("_extract_status",)
 

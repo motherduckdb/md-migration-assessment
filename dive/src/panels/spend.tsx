@@ -12,6 +12,8 @@ import { ErrorNote, Panel, Skeleton, TipBox } from '../ui';
 
 export type DateRange = { start: string; end: string } | null;
 
+import { useVendor } from '../vendor';
+
 export function SpendPanel({
   filters,
   warehouses,
@@ -25,6 +27,7 @@ export function SpendPanel({
   range: DateRange;
   setRange: (r: DateRange) => void;
 }) {
+  const vendor = useVendor();
   const query = useSQLQuery(Q.spendDaily(filters));
   const rows = useMemo(() => {
     const long = (Array.isArray(query.data) ? query.data : []).map((r) => ({ day: S(r.day), warehouse_name: S(r.warehouse_name), credits: N(r.credits) }));
@@ -56,7 +59,7 @@ export function SpendPanel({
       title="2 · Spend over time"
       sub={
         <>
-          Daily Snowflake credits per warehouse (compute + cloud services) over the history window. Drag the brush to set the date range for the workload and concurrency panels; the warehouse control filters every panel.
+          {vendor.spendNote} Drag the brush to set the date range for the workload and concurrency panels; the warehouse control filters every panel.
           {rows.length ? <> Window total for the shown warehouses: <strong>{formatCredits(total)}</strong> credits.</> : null}
         </>
       }

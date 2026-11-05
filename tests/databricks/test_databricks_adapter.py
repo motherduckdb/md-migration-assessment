@@ -61,11 +61,14 @@ def test_registry_and_protocols():
 
 
 def test_every_extractor_sql_resource_loads_and_has_scope_hook():
+    # Catalog-scoped extracts must take --scope; account-level system tables
+    # (billing, compute, lakeflow, audit) have no catalog column to scope by.
     for ex in ADAPTER.extractors:
         for s in ex.sources:
             if hasattr(s, "sql"):
                 sql = load_sql_path(s.sql)
-                assert "{scope_filter}" in sql, s.sql
+                if ex.scope_columns:
+                    assert "{scope_filter}" in sql, s.sql
 
 
 def test_storage_credentials_never_selects_the_secret():
@@ -99,7 +102,9 @@ def test_lite_collection_is_complete_and_walks_catalogs(out_db):
     coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
     st = runs(out_db, coll)
     assert {e.name for e in ADAPTER.extractors} == set(st)
-    assert st.pop("query_workload_rollup")["status"] == "not_requested"
+    for ex in ADAPTER.extractors:
+        if ex.min_profile == Profile.STANDARD:
+            assert st.pop(ex.name)["status"] == "not_requested", ex.name
     assert all(r["status"] == "complete" for r in st.values()), st
     assert "role-visibility bound" in st["shares"]["detail"]
     assert st["metastores"]["detail"] is None
@@ -368,10 +373,10 @@ def test_standard_collects_workload_rollup_without_statement_text(out_db):
         "sum(n_from_result_cache) FROM raw.query_workload_rollup GROUP BY ALL ORDER BY ALL"
     ).fetchall()
     # the statement outside the 30-day window is not counted
-    assert rows == [("SERVERLESS_COMPUTE", "REPLACE", 1, 1, 0), ("WAREHOUSE", "SELECT", 3, 2, 1)]
+    assert rows == [("SERVERLESS_COMPUTE", "REPLACE", 1, 1, 0), ("WAREHOUSE", "SELECT", 4, 3, 1)]
     build_report(out_db)
     status, n, samples = features(out_db, coll)["query_workload"]
-    assert (status, n, samples) == ("observed", 4, ["REPLACE", "SELECT"])
+    assert (status, n, samples) == ("observed", 5, ["REPLACE", "SELECT"])
 
 
 def test_workload_without_system_grant_is_unknown_not_zero(out_db):
@@ -427,3 +432,31 @@ def test_hive_metastore_walk_caps_tables():
 
     table, truncated = hive_tables_table(["a", "b"], lambda s: [s + "1", s + "2"], 3)
     assert truncated and table.num_rows == 3
+
+
+def test_standard_builds_dive_report_tables_and_system_signals(out_db):
+    """A Databricks collection fills the same report.* relations the Dive reads."""
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
+    st = runs(out_db, coll)
+    for name in ("warehouses", "jobs", "pipelines", "billing_usage_daily", "grants_summary",
+                 "table_lineage_rollup", "query_concurrency", "client_app_fingerprints",
+                 "query_dialect_constructs", "workspace_feature_usage"):
+        assert st[name]["status"] == "complete", (name, st[name])
+    build_report(out_db)
+    count = lambda t: out_db.execute(f"SELECT count(*) FROM report.{t}").fetchone()[0]  # noqa: E731
+    for t in ("spend_profile", "workload_rollup", "concurrency_profile",
+              "tool_fingerprints", "ingestion_inventory", "dialect_constructs"):
+        assert count(t) > 0, t
+    # warehouse ids resolve to names; non-warehouse compute keeps its type
+    names = {r[0] for r in out_db.execute(
+        "SELECT DISTINCT warehouse_name FROM report.workload_rollup").fetchall()}
+    assert "wh1" not in names
+    # lineage targets in the system catalog never show up as ingestion
+    assert out_db.execute(
+        "SELECT count(*) FROM report.ingestion_inventory WHERE table_catalog = 'system'"
+    ).fetchone()[0] == 0
+    feats = dict(out_db.execute(
+        "SELECT feature, observation_status FROM report.feature_inventory").fetchall())
+    for f in ("lakeflow_jobs", "lakeflow_pipelines", "sql_warehouses", "table_lineage_edges"):
+        assert feats[f] == "observed", (f, feats[f])
+    assert feats["delta_sharing_recipients"] == "unknown"
