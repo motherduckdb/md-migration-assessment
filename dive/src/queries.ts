@@ -38,11 +38,16 @@ export const collection = () => `
          strftime(started_at, '%Y-%m-%d %H:%M UTC') AS started_at
   FROM ${M('collections')}`;
 
+// Observed window: spend dates, falling back to workload dates when spend is empty.
 export const window = () => `
-  SELECT strftime(min(usage_date), '%Y-%m-%d') AS window_start,
-         strftime(max(usage_date), '%Y-%m-%d') AS window_end,
-         date_diff('day', min(usage_date), max(usage_date)) + 1 AS window_days
-  FROM ${R('spend_profile')}`;
+  WITH d AS (
+    SELECT usage_date::DATE AS d FROM ${R('spend_profile')}
+    UNION ALL SELECT usage_date::DATE FROM ${R('workload_rollup')}
+  )
+  SELECT strftime(min(d), '%Y-%m-%d') AS window_start,
+         strftime(max(d), '%Y-%m-%d') AS window_end,
+         date_diff('day', min(d), max(d)) + 1 AS window_days
+  FROM d`;
 
 export const extractRuns = () => `
   SELECT extractor, target_table, status, source_used, rows_written, required_privilege, min_edition,
@@ -52,10 +57,17 @@ export const extractRuns = () => `
 
 // ── filter domains ────────────────────────────────────────────────────────────
 
+// Warehouse names from every fact that carries one, so the control and the
+// per-warehouse series still work when spend is empty (e.g. billing lag).
 export const warehouses = () => `
-  SELECT warehouse_name, sum(credits_used) AS credits
-  FROM ${R('spend_profile')}
-  GROUP BY 1 ORDER BY 2 DESC, 1`;
+  WITH names AS (
+    SELECT warehouse_name, credits_used AS credits FROM ${R('spend_profile')}
+    UNION ALL SELECT warehouse_name, NULL FROM ${R('workload_rollup')}
+    UNION ALL SELECT warehouse_name, NULL FROM ${R('concurrency_profile')}
+  )
+  SELECT warehouse_name, sum(credits) AS credits
+  FROM names WHERE warehouse_name IS NOT NULL
+  GROUP BY 1 ORDER BY 2 DESC NULLS LAST, 1`;
 
 export const databases = (f: Filters) => `
   SELECT coalesce(table_catalog, '(unattributed)') AS table_catalog, sum(active_bytes) AS active_bytes
