@@ -41,6 +41,10 @@ export function ConcurrencyPanel({
     return pivot(long, 'day', 'warehouse_name', 'queued_ms').sort((a, b) => String(a.day).localeCompare(String(b.day)));
   }, [queued.data]);
 
+  // only warehouses that actually have points get a series (and a legend entry)
+  const concSeries = useMemo(() => visible.filter((w) => concRows.some((r) => r[w] !== undefined)), [visible, concRows]);
+  const queuedSeries = useMemo(() => visible.filter((w) => queuedRows.some((r) => N(r[w]) > 0)), [visible, queuedRows]);
+
   const tickFmt = (t: unknown) => (grain === 'day' ? String(t).slice(0, 7) : String(t).slice(5, 13));
 
   return (
@@ -64,18 +68,18 @@ export function ConcurrencyPanel({
               }}
             />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-            {visible.map((w) => (
+            {concSeries.map((w) => (
               <Line key={`${w}-avg`} type="stepAfter" dataKey={`${w} (avg)`} stroke={color(w)} strokeOpacity={0.5} strokeWidth={1} strokeDasharray="2 2" dot={false} isAnimationActive={false} connectNulls legendType="none" />
             ))}
-            {visible.map((w) => (
+            {concSeries.map((w) => (
               <Line key={w} type="stepAfter" dataKey={w} stroke={color(w)} strokeWidth={1.3} dot={false} isAnimationActive={false} connectNulls />
             ))}
           </LineChart>
         </ResponsiveContainer>
       )}
       <h3>queued (overload) time per day</h3>
-      {queued.isError ? <ErrorNote error={queued.error} /> : queued.isLoading && queuedRows.length === 0 ? <Skeleton height={170} /> : queuedRows.length === 0 ? (
-        <p style={{ color: MUTED, fontSize: 12 }}>No queued-overload time in this selection.</p>
+      {queued.isError ? <ErrorNote error={queued.error} /> : queued.isLoading && queuedRows.length === 0 ? <Skeleton height={170} /> : queuedSeries.length === 0 ? (
+        <p style={{ color: MUTED, fontSize: 12 }}>No queued-overload time in this selection: no query waited for capacity.</p>
       ) : (
         <ResponsiveContainer width="100%" height={180}>
           <BarChart data={queuedRows} margin={{ top: 4, right: 16, bottom: 0, left: 0 }} barCategoryGap={0}>
@@ -89,7 +93,7 @@ export function ConcurrencyPanel({
                 return <TipBox title={String(label)} rows={items.map((p) => ({ color: String(p.color), name: String(p.name), value: formatMs(p.value) }))} />;
               }}
             />
-            {visible.map((w) => (
+            {queuedSeries.map((w) => (
               <Bar key={w} dataKey={w} stackId="q" fill={color(w)} isAnimationActive={false} />
             ))}
           </BarChart>
