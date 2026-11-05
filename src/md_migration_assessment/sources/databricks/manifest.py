@@ -10,8 +10,9 @@ is not in ``information_schema``; it comes from ``DESCRIBE DETAIL``, run
 per table by the connection and returned as one client-materialized
 command result (:data:`TABLE_DETAILS_COMMAND`).
 
-v1 scope is the catalog: no billing, query history, lineage, jobs or
-pipelines yet (those are planned signals).
+v1 covers the catalog. v2 adds the workload rollup over
+``system.query.history`` (standard profile). Billing, lineage, jobs and
+pipelines are still planned signals.
 """
 
 from __future__ import annotations
@@ -31,16 +32,27 @@ from ...privacy import PrivacyClass
 # Version of the raw.* table shapes. Bump on any extract column change.
 # v1: catalog inventory (information_schema walk + metastore objects) and
 #   DESCRIBE DETAIL table details.
-RAW_SCHEMA_VERSION = 1
+# v2: query_workload_rollup (system.query.history aggregate, standard) and
+#   hive_metastore_tables (SHOW TABLES walk of the legacy Hive metastore).
+RAW_SCHEMA_VERSION = 2
 
 #: meta.extract_runs.source_used labels for this adapter's strategies.
 INFORMATION_SCHEMA = "information_schema"
 METASTORE = "system_information_schema"
 DESCRIBE_DETAIL = "describe_detail"
+SHOW_TABLES = "show_tables"
+SYSTEM_TABLES = "system_tables"
 
 #: Sentinel command the connection expands into one DESCRIBE DETAIL per
 #: visible table (see connection.DatabricksSource.command).
 TABLE_DETAILS_COMMAND = "DESCRIBE DETAIL <each visible table>"
+
+#: Sentinel command for the legacy Hive metastore, which information_schema
+#: does not cover: SHOW SCHEMAS IN hive_metastore, then SHOW TABLES per schema.
+HIVE_TABLES_COMMAND = "SHOW TABLES <each hive_metastore schema>"
+HIVE_TABLE_COLUMNS: tuple[str, ...] = (
+    "table_catalog", "table_schema", "table_name", "list_error",
+)
 
 TABLE_DETAIL_COLUMNS: tuple[str, ...] = (
     "table_catalog", "table_schema", "table_name", "format", "location",
@@ -78,12 +90,16 @@ def _per_catalog(name: str, scope: dict[str, str], sensitive: dict, **rest) -> E
     )
 
 
-def _metastore(name: str, sensitive: dict, scope: dict[str, str] | None = None) -> Extractor:
+def _metastore(
+    name: str, sensitive: dict, scope: dict[str, str] | None = None, *, bound: bool = True
+) -> Extractor:
+    # Unity Catalog's system.information_schema lists only securables the
+    # collecting principal has a privilege on, so a zero is not absence.
     return Extractor(
         name=name,
         category="platform",
         min_profile=Profile.LITE,
-        sources=(GlobalQuery(f"metastore/{name}.sql", METASTORE),),
+        sources=(GlobalQuery(f"metastore/{name}.sql", METASTORE, visibility_bound=bound),),
         scope_columns=scope or {},
         required_privilege=_PRIV_METASTORE,
         sensitive_fields=sensitive,
@@ -187,7 +203,18 @@ EXTRACTORS: list[Extractor] = [
             "detail_error": PrivacyClass.OBJECT_NAME,
         },
     ),
-    _metastore("metastores", {"metastore_name": PrivacyClass.OBJECT_NAME}),
+    Extractor(
+        name="hive_metastore_tables",
+        category="catalog",
+        min_profile=Profile.LITE,
+        sources=(Command(
+            HIVE_TABLES_COMMAND, HIVE_TABLE_COLUMNS, SHOW_TABLES, visibility_bound=True,
+        ),),
+        scope_columns=dict(_TBL_SCOPE),
+        required_privilege="USAGE on hive_metastore schemas (legacy table ACLs) or workspace admin",
+        sensitive_fields={**_TBL_NAMES, "list_error": PrivacyClass.OBJECT_NAME},
+    ),
+    _metastore("metastores", {"metastore_name": PrivacyClass.OBJECT_NAME}, bound=False),
     _metastore("external_locations", {
         "external_location_name": PrivacyClass.OBJECT_NAME,
         "url": PrivacyClass.OBJECT_NAME,
@@ -210,4 +237,18 @@ EXTRACTORS: list[Extractor] = [
         "share_owner": PrivacyClass.USER_IDENTITY,
         "comment": PrivacyClass.COMMENT,
     }),
+    # ── workload (standard profile: system tables need explicit grants) ──
+    Extractor(
+        name="query_workload_rollup",
+        category="workload",
+        min_profile=Profile.STANDARD,
+        sources=(GlobalQuery(
+            "system/query_workload_rollup.sql", SYSTEM_TABLES,
+            min_profile=Profile.STANDARD, source_view="system.query.history",
+        ),),
+        required_privilege="USE CATALOG system + USE SCHEMA system.query + SELECT on system.query.history",
+        window_days=30,
+        window_from_history_days=True,
+        sensitive_fields={"warehouse_id": PrivacyClass.OBJECT_NAME},
+    ),
 ]

@@ -480,7 +480,10 @@ def _run_extractor(
                 run.rows_written = ing.finish()
                 run.status = "complete"
                 run.source_used = strategy.label
-                run.error_detail = _fallback_note(unavailable, strategy.label)
+                run.error_detail = _join_notes(
+                    _fallback_note(unavailable, strategy.label),
+                    VISIBILITY_NOTE if strategy.visibility_bound else None,
+                )
                 if window_days is not None:
                     run.actual_window_end = anchor - timedelta(
                         minutes=ex.window_end_lag_minutes

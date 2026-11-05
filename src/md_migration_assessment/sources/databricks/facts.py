@@ -1,6 +1,10 @@
 """Databricks report fact builders (adapter-owned ``report.*`` relations).
 
 - ``report.sizing``: per table, type, format, bytes and files.
+- ``report.collection_warnings``: per table, governance that changes what a
+  reader sees (row filters, column masks). Reading such a table as a
+  principal the policy does not exempt returns filtered rows or masked
+  values, so a migration copy must run as an exempt principal.
 - ``report.readable_in_place``: per table, how MotherDuck could read it
   without copying (Unity Catalog Iceberg REST for Iceberg and UniForm
   tables, a direct Delta scan for external Delta), or what has to happen
@@ -153,4 +157,42 @@ def _build_readable_in_place(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
-FACT_BUILDERS = (_build_sizing, _build_readable_in_place)
+_WARN_DDL = """
+CREATE SCHEMA IF NOT EXISTS report;
+DROP TABLE IF EXISTS report.collection_warnings;
+CREATE TABLE report.collection_warnings (
+    collection_id UUID, warning VARCHAR, table_catalog VARCHAR,
+    table_schema VARCHAR, table_name VARCHAR, policy_function VARCHAR,
+    columns VARCHAR, detail VARCHAR
+);
+"""
+
+_WARNINGS = {
+    "row_filters": (
+        "row_filter", "filter_name", "target_columns",
+        "rows are filtered for principals the policy does not exempt; "
+        "copy or validate as an exempt principal or rows will be missing",
+    ),
+    "column_masks": (
+        "column_mask", "mask_name", "column_name",
+        "values are masked for principals the policy does not exempt; "
+        "copy as an exempt principal or masked values will be migrated",
+    ),
+}
+
+
+def _build_collection_warnings(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(_WARN_DDL)
+    for source, (warning, fn_col, cols_col, detail) in _WARNINGS.items():
+        if not table_exists(con, "raw", source):
+            continue
+        con.execute(f"""
+            INSERT INTO report.collection_warnings BY NAME
+            SELECT collection_id, '{warning}' AS warning, table_catalog,
+                   table_schema, table_name, {fn_col} AS policy_function,
+                   {cols_col}::VARCHAR AS columns, '{detail}' AS detail
+            FROM raw.{source}
+        """)
+
+
+FACT_BUILDERS = (_build_sizing, _build_readable_in_place, _build_collection_warnings)

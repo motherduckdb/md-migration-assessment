@@ -99,7 +99,10 @@ def test_lite_collection_is_complete_and_walks_catalogs(out_db):
     coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
     st = runs(out_db, coll)
     assert {e.name for e in ADAPTER.extractors} == set(st)
+    assert st.pop("query_workload_rollup")["status"] == "not_requested"
     assert all(r["status"] == "complete" for r in st.values()), st
+    assert "role-visibility bound" in st["shares"]["detail"]
+    assert st["metastores"]["detail"] is None
     assert st["tables"]["source_used"] == "information_schema"
     assert json.loads(st["tables"]["actual_scope"]) == ["assess_lab", "workspace"]
     assert "role-visibility bound" in st["tables"]["detail"]
@@ -139,15 +142,16 @@ def test_signals_count_the_seeded_features(out_db):
         status, count, _ = f[name]
         if n:
             assert (status, count) == ("observed", n), (name, f[name])
-        elif name == "delta_shares":
-            # metastore-level GlobalQuery: not flagged visibility-bound (v1 gap)
-            assert (status, count) == ("observed_zero", 0), (name, f[name])
         else:
-            # zero from a visibility-bound listing is missing evidence, not zero
+            # zero from a visibility-bound listing (per-catalog or the
+            # metastore-wide system.information_schema) is missing evidence
             assert (status, count) == ("unknown", None), (name, f[name])
+    # metastore-level counts are lower bounds too
+    assert f["federation_connections"][0] == "observed"
     # hidden MV furniture is not counted as user tables
     assert f["materialized_views"][2] == ["assess_lab.marts.daily_revenue"]
-    assert f["hive_metastore_tables"][0] == "unknown"
+    assert f["hive_metastore_tables"] == ("observed", 2, [
+        "hive_metastore.legacy_sales.customers_2019", "hive_metastore.legacy_sales.orders_2019"])
 
 
 def test_scope_filters_sql_and_command_output(out_db):
@@ -345,3 +349,81 @@ def test_source_command_caps_and_isolates_per_table_errors():
 def test_detail_targets_skip_views_and_hidden_tables():
     sql = detail_targets_sql(10)
     assert "'VIEW'" not in sql and "__materialization_" in sql and "'samples'" in sql
+
+
+# ── v2: workload, warnings, handoff classification ──────────────────────
+
+
+def test_standard_collects_workload_rollup_without_statement_text(out_db):
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
+    st = runs(out_db, coll)
+    assert st["query_workload_rollup"]["status"] == "complete"
+    assert st["query_workload_rollup"]["source_used"] == "system_tables"
+    cols = {r[0] for r in out_db.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'raw' AND table_name = 'query_workload_rollup'").fetchall()}
+    assert not {"statement_text", "executed_by"} & cols
+    rows = out_db.execute(
+        "SELECT compute_type, statement_type, sum(n_queries), sum(n_succeeded), "
+        "sum(n_from_result_cache) FROM raw.query_workload_rollup GROUP BY ALL ORDER BY ALL"
+    ).fetchall()
+    # the statement outside the 30-day window is not counted
+    assert rows == [("SERVERLESS_COMPUTE", "REPLACE", 1, 1, 0), ("WAREHOUSE", "SELECT", 3, 2, 1)]
+    build_report(out_db)
+    status, n, samples = features(out_db, coll)["query_workload"]
+    assert (status, n, samples) == ("observed", 4, ["REPLACE", "SELECT"])
+
+
+def test_workload_without_system_grant_is_unknown_not_zero(out_db):
+    conn = FakeDatabricks(denied_views={"query_history"})
+    coll = run_collection(out_db, ADAPTER, conn, profile=Profile.STANDARD)
+    assert runs(out_db, coll)["query_workload_rollup"]["status"] == "unavailable"
+    build_report(out_db)
+    assert features(out_db, coll)["query_workload"][0] == "unknown"
+
+
+def test_collection_warnings_flag_filtered_and_masked_tables(out_db):
+    run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    build_report(out_db)
+    rows = out_db.execute(
+        "SELECT warning, table_schema || '.' || table_name, policy_function "
+        "FROM report.collection_warnings ORDER BY ALL").fetchall()
+    assert [r[0] for r in rows] == ["column_mask", "row_filter"]
+    assert all(r[2] for r in rows)
+
+
+def test_report_columns_are_all_classified_for_handoff(out_db):
+    from md_migration_assessment.handoff import classify_aggregate_columns
+
+    run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
+    build_report(out_db)
+    for (table,) in out_db.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'report'"
+    ).fetchall():
+        cols = [r[0] for r in out_db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'report' AND table_name = ? "
+            "AND (data_type LIKE '%VARCHAR%' OR data_type = 'UUID')", [table]).fetchall()]
+        assert classify_aggregate_columns(f"report.{table}", cols)[1] == [], table
+
+
+def test_hive_metastore_walk_records_schema_errors_and_disabled_hms(out_db, tmp_path):
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    errs = out_db.execute(
+        "SELECT table_schema, list_error FROM raw.hive_metastore_tables "
+        "WHERE list_error IS NOT NULL").fetchall()
+    assert [e[0] for e in errs] == ["locked"] and "INSUFFICIENT_PERMISSIONS" in errs[0][1]
+
+    other = open_output(str(tmp_path / "nohms.duckdb"))
+    coll = run_collection(other, ADAPTER, FakeDatabricks(hive=None), profile=Profile.LITE)
+    run = runs(other, coll)["hive_metastore_tables"]
+    assert run["status"] == "unavailable" and "UC_HIVE_METASTORE_DISABLED" in run["detail"]
+    build_report(other)
+    assert features(other, coll)["hive_metastore_tables"][0] == "unknown"
+
+
+def test_hive_metastore_walk_caps_tables():
+    from md_migration_assessment.sources.databricks.connection import hive_tables_table
+
+    table, truncated = hive_tables_table(["a", "b"], lambda s: [s + "1", s + "2"], 3)
+    assert truncated and table.num_rows == 3

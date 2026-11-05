@@ -169,6 +169,9 @@ AGGREGATE_SENSITIVE_COLUMNS: dict[str, PrivacyClass] = {
     "table_schema": PrivacyClass.OBJECT_NAME,
     "table_name": PrivacyClass.OBJECT_NAME,
     "warehouse_name": PrivacyClass.OBJECT_NAME,
+    # Databricks governance warnings: policy function and column names
+    "policy_function": PrivacyClass.OBJECT_NAME,
+    "columns": PrivacyClass.OBJECT_NAME,
     "sample_objects": PrivacyClass.OBJECT_NAME,
     # --scope entries are database/schema names
     "scope": PrivacyClass.OBJECT_NAME,
@@ -201,6 +204,9 @@ AGGREGATE_LABEL_COLUMNS: frozenset[str] = frozenset({
     "extract_status", "note", "construct", "source", "query_type", "table_type",
     "load_method", "confidence", "detection_method", "tool",
     "shape_key", "query_parameterized_hash_version",
+    # Databricks fact labels: vendor format names and tool-chosen paths/texts
+    "data_source_format", "uniform_formats", "storage_scheme", "read_path",
+    "warning", "detail",
 })
 _LABEL_SUFFIXES = ("_extract_status",)
 

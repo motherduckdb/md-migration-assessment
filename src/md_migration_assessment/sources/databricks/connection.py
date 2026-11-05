@@ -23,7 +23,12 @@ from datetime import datetime, timezone
 import pyarrow as pa
 
 from ..base import SessionInfo
-from .manifest import TABLE_DETAIL_COLUMNS, TABLE_DETAILS_COMMAND
+from .manifest import (
+    HIVE_TABLE_COLUMNS,
+    HIVE_TABLES_COMMAND,
+    TABLE_DETAIL_COLUMNS,
+    TABLE_DETAILS_COMMAND,
+)
 
 #: Catalogs never walked: platform furniture, the public sample data, the
 #: workspace-local legacy metastore (its own planned signal), internal.
@@ -151,6 +156,30 @@ def detail_row(catalog: str, schema: str, table: str, detail: dict | None,
     return row
 
 
+def hive_tables_table(schemas, show_tables, cap: int) -> tuple[pa.Table, bool]:
+    """Rows for raw.hive_metastore_tables; truncated past ``cap`` tables."""
+    rows: list[dict] = []
+    for schema in schemas:
+        try:
+            names = show_tables(schema)
+        except Exception as exc:  # noqa: BLE001 - one schema must not sink the rest
+            rows.append({"table_catalog": "hive_metastore", "table_schema": schema,
+                         "table_name": None, "list_error": str(exc)})
+            continue
+        rows.extend({"table_catalog": "hive_metastore", "table_schema": schema,
+                     "table_name": n, "list_error": None} for n in names)
+    truncated = sum(r["table_name"] is not None for r in rows) > cap
+    if truncated:
+        kept, n = [], 0
+        for r in rows:
+            n += r["table_name"] is not None
+            if n <= cap or r["table_name"] is None:
+                kept.append(r)
+        rows = kept
+    schema = pa.schema([(c, pa.string()) for c in HIVE_TABLE_COLUMNS])
+    return pa.Table.from_pylist(rows, schema=schema), truncated
+
+
 def details_table(rows: list[dict]) -> pa.Table:
     schema = pa.schema([
         (c, pa.int64() if c in ("num_files", "size_in_bytes")
@@ -205,6 +234,8 @@ class DatabricksSource:
         return self._fetch(sql)
 
     def command(self, command: str) -> tuple[pa.Table, bool]:
+        if command == HIVE_TABLES_COMMAND:
+            return self._hive_tables()
         if command != TABLE_DETAILS_COMMAND:
             raise ValueError(f"unsupported Databricks command: {command!r}")
         cap = self._detail_max_tables
@@ -221,6 +252,21 @@ class DatabricksSource:
             except Exception as exc:  # noqa: BLE001 - one table must not sink the rest
                 rows.append(detail_row(cat, sch, tbl, None, error=str(exc)))
         return details_table(rows), truncated
+
+    def _hive_tables(self) -> tuple[pa.Table, bool]:
+        """Walk the legacy Hive metastore. A disabled or inaccessible
+        metastore raises here (classified unavailable); a schema that fails
+        is one row with list_error, so it never sinks the rest."""
+        schemas = self._fetch("SHOW SCHEMAS IN hive_metastore").column(0).to_pylist()
+        return hive_tables_table(
+            [s for s in schemas if s], self._show_tables, self._detail_max_tables
+        )
+
+    def _show_tables(self, schema: str) -> list[str]:
+        t = self._fetch(f"SHOW TABLES IN hive_metastore.{bq(schema)}")
+        temp = t.column("isTemporary").to_pylist() if "isTemporary" in t.column_names else None
+        names = t.column("tableName").to_pylist()
+        return [n for i, n in enumerate(names) if n and not (temp and temp[i])]
 
     def list_databases(self) -> list[str]:
         names = self._fetch("SHOW CATALOGS").column(0).to_pylist()

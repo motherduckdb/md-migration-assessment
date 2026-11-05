@@ -19,8 +19,15 @@ from md_migration_assessment.sources.base import SessionInfo
 from md_migration_assessment.sources.databricks.connection import (
     detail_row,
     details_table,
+    hive_tables_table,
 )
-from md_migration_assessment.sources.databricks.manifest import TABLE_DETAILS_COMMAND
+from md_migration_assessment.sources.databricks.manifest import (
+    HIVE_TABLES_COMMAND,
+    TABLE_DETAILS_COMMAND,
+)
+
+#: legacy Hive metastore: schema -> tables (None = SHOW TABLES fails there)
+HIVE = {"legacy_sales": ["orders_2019", "customers_2019"], "locked": None}
 
 SERVER_ANCHOR = datetime(2030, 1, 1, tzinfo=timezone.utc)
 
@@ -159,6 +166,26 @@ DETAILS = {
     ("workspace", "default", "assess_scope_probe"): _detail(),
 }
 
+#: system.query.history: a few statements inside the 30-day window ending at
+#: SERVER_ANCHOR and one outside it. Synthetic, aggregate-only in the extract.
+WORKLOAD_DDL = """
+CREATE TABLE query_history (
+    compute STRUCT(type VARCHAR, warehouse_id VARCHAR), statement_type VARCHAR,
+    execution_status VARCHAR, start_time TIMESTAMP, from_result_cache BOOLEAN,
+    total_duration_ms BIGINT, read_bytes BIGINT, read_rows BIGINT,
+    written_bytes BIGINT, spilled_local_bytes BIGINT,
+    waiting_at_capacity_duration_ms BIGINT, waiting_for_compute_duration_ms BIGINT,
+    statement_text VARCHAR, executed_by VARCHAR
+);
+INSERT INTO query_history VALUES
+  ({'type': 'WAREHOUSE', 'warehouse_id': 'wh1'}, 'SELECT', 'FINISHED', TIMESTAMP '2029-12-30 10:00', false, 100, 1000, 10, 0, 0, 0, 5, 'select 1', 'seed@example.com'),
+  ({'type': 'WAREHOUSE', 'warehouse_id': 'wh1'}, 'SELECT', 'FAILED',   TIMESTAMP '2029-12-30 11:00', false, 50, 0, 0, 0, 0, 0, 0, 'select x', 'seed@example.com'),
+  ({'type': 'WAREHOUSE', 'warehouse_id': 'wh1'}, 'SELECT', 'FINISHED', TIMESTAMP '2029-12-31 09:00', true, 5, 0, 0, 0, 0, 0, 0, 'select 1', 'seed@example.com'),
+  ({'type': 'SERVERLESS_COMPUTE', 'warehouse_id': NULL}, 'REPLACE', 'FINISHED', TIMESTAMP '2029-12-31 12:00', false, 900, 0, 0, 5000, 0, NULL, NULL, 'create or replace', 'seed@example.com'),
+  ({'type': 'WAREHOUSE', 'warehouse_id': 'wh1'}, 'SELECT', 'FINISHED', TIMESTAMP '2029-10-01 00:00', false, 1, 0, 0, 0, 0, 0, 0, 'old', 'seed@example.com');
+CREATE MACRO percentile_approx(x, p) AS quantile_disc(x, p);
+"""
+
 _PER_CAT_RE = re.compile(r"`((?:[^`]|``)+)`\.information_schema\.(\w+)")
 _SYSTEM_RE = re.compile(r"system\.information_schema\.(\w+)")
 
@@ -166,13 +193,17 @@ _SYSTEM_RE = re.compile(r"system\.information_schema\.(\w+)")
 class FakeDatabricks:
     def __init__(self, *, denied_views: set[str] = frozenset(),
                  denied_catalogs: set[str] = frozenset(),
-                 detail_errors: dict | None = None) -> None:
+                 detail_errors: dict | None = None,
+                 hive: dict | None = HIVE, hive_cap: int = 2000) -> None:
         self.db = duckdb.connect()
         self.db.execute(DDL)
         self.db.execute(SEED)
+        self.db.execute(WORKLOAD_DDL)
         self.denied_views = set(denied_views)
         self.denied_catalogs = set(denied_catalogs)
         self.detail_errors = detail_errors or {}
+        self.hive = hive
+        self.hive_cap = hive_cap
         self.queries: list[str] = []
         self.closed = False
 
@@ -191,6 +222,14 @@ class FakeDatabricks:
                 raise PermissionError("PERMISSION_DENIED: metastore admin required")
             return view
 
+        if "system.query.history" in sql:
+            if "query_history" in self.denied_views:
+                raise PermissionError(
+                    "[INSUFFICIENT_PERMISSIONS] User does not have USE SCHEMA on Schema 'system.query'."
+                )
+            sql = sql.replace("system.query.history", "query_history").replace(
+                "current_timestamp()", f"TIMESTAMP '{SERVER_ANCHOR:%Y-%m-%d %H:%M:%S}'"
+            )
         return _SYSTEM_RE.sub(system, _PER_CAT_RE.sub(per_cat, sql))
 
     def reader(self, sql: str) -> pa.Table:
@@ -198,6 +237,19 @@ class FakeDatabricks:
         return self.db.execute(self._rewrite(sql)).arrow()
 
     def command(self, command: str) -> tuple[pa.Table, bool]:
+        if command == HIVE_TABLES_COMMAND:
+            if self.hive is None:
+                raise RuntimeError(
+                    "[UC_HIVE_METASTORE_DISABLED_EXCEPTION] The operation attempted "
+                    "to use Hive Metastore, which is disabled. SQLSTATE: 0A000"
+                )
+
+            def show_tables(schema):
+                if self.hive[schema] is None:
+                    raise PermissionError("[INSUFFICIENT_PERMISSIONS] no USAGE on schema")
+                return self.hive[schema]
+
+            return hive_tables_table(list(self.hive), show_tables, self.hive_cap)
         assert command == TABLE_DETAILS_COMMAND, command
         rows = []
         for (cat, sch, tbl), d in sorted(DETAILS.items()):

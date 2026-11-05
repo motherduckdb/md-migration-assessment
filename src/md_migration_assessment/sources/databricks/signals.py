@@ -104,11 +104,24 @@ SIGNALS: list[Signal] = [
     _plain("federation_connections", "platform", "connections", "true",
            "connection_name || ' (' || coalesce(connection_type, '?') || ')'"),
     _plain("delta_shares", "platform", "shares", "true", "share_name"),
+    _plain("hive_metastore_tables", "platform", "hive_metastore_tables",
+           "table_name IS NOT NULL",
+           "table_catalog || '.' || table_schema || '.' || table_name"),
+    # ── workload ───────────────────────────────────────────────────────
+    # statements in the history window; samples are the statement types
+    Signal(
+        name="query_workload", category="platform",
+        source_extractor="query_workload_rollup",
+        sql=(
+            "SELECT coalesce(sum(n_queries), 0)::BIGINT AS n,\n"
+            "       coalesce(list(DISTINCT statement_type ORDER BY statement_type), [])\n"
+            "           AS sample_objects\n"
+            "FROM raw.query_workload_rollup WHERE collection_id = '{cid}'"
+        ),
+    ),
 ]
 
 PLANNED_SIGNALS: list[PlannedSignal] = [
-    PlannedSignal("hive_metastore_tables", "platform",
-                  "legacy hive_metastore catalog is not walked in v1"),
     PlannedSignal("delta_sharing_recipients", "platform",
                   "share recipients need SHOW RECIPIENTS (metastore admin); not collected in v1"),
     PlannedSignal("jobs_and_pipelines", "platform",
@@ -117,8 +130,6 @@ PLANNED_SIGNALS: list[PlannedSignal] = [
                   "system.compute clusters and Spark workloads not collected in v1"),
     PlannedSignal("spend_profile", "platform",
                   "system.billing usage/list prices not collected in v1"),
-    PlannedSignal("query_workload", "platform",
-                  "system.query.history aggregates not collected in v1"),
     PlannedSignal("table_lineage", "platform",
                   "system.access.table_lineage not collected in v1"),
 ]
