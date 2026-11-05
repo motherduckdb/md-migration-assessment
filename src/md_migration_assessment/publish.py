@@ -96,19 +96,22 @@ def connect_motherduck(token: str | None = None) -> duckdb.DuckDBPyConnection:
     return duckdb.connect("md:", config={"motherduck_token": resolve_token(token)})
 
 
+_SOURCE_NOUN = {"snowflake": "Snowflake account", "databricks": "Databricks workspace"}
+
+
 def _collection_facts(db_path: Path) -> dict[str, Any]:
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         row = con.execute(
             "SELECT source_deployment, source_region, tool_version, "
-            "strftime(started_at, '%Y-%m-%d') FROM meta.collections "
+            "strftime(started_at, '%Y-%m-%d'), source_kind FROM meta.collections "
             "ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
     finally:
         con.close()
     if row is None:
         raise ValueError(f"{db_path} has no collection in meta.collections")
-    return {"deployment": row[0], "region": row[1], "tool_version": row[2], "collected": row[3]}
+    return {"deployment": row[0], "region": row[1], "tool_version": row[2], "collected": row[3], "source_kind": row[4]}
 
 
 def _required_resources_sql(database: str) -> str:
@@ -191,7 +194,7 @@ def publish(
     where = " · ".join(x for x in (facts["deployment"], facts["region"]) if x)
     title = title or (f"{DEFAULT_TITLE} · {facts['deployment']}" if facts["deployment"] else DEFAULT_TITLE)
     description = (
-        f"Read-only dashboard over the md-assess {facts['tool_version']} handoff of Snowflake account "
+        f"Read-only dashboard over the md-assess {facts['tool_version']} handoff of {_SOURCE_NOUN.get(facts['source_kind'], 'source')} "
         f"{where or '(not recorded)'}, collected {facts['collected']}. Facts and coverage only: "
         "no source bodies or query text were uploaded."
     )
