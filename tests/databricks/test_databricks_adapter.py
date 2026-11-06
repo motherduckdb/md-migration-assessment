@@ -460,3 +460,57 @@ def test_standard_builds_dive_report_tables_and_system_signals(out_db):
     for f in ("lakeflow_jobs", "lakeflow_pipelines", "sql_warehouses", "table_lineage_edges"):
         assert feats[f] == "observed", (f, feats[f])
     assert feats["delta_sharing_recipients"] == "unknown"
+
+
+# ── job definitions (Jobs API) ───────────────────────────────────────────
+
+
+def test_job_tasks_classify_code_without_paths_or_parameters(out_db):
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
+    assert runs(out_db, coll)["job_tasks"]["status"] == "complete"
+    rows = out_db.execute(
+        "SELECT job_name, task_type, in_for_each, code_source, file_language, compute_kind, "
+        "spark_version, library_kinds, trigger_kind FROM raw.job_tasks ORDER BY job_id, task_index"
+    ).fetchall()
+    assert rows == [
+        ("assess_lab_seed_job", "notebook", False, "WORKSPACE", "scala", "job_cluster",
+         "15.4.x-scala2.12", "maven,pypi", "cron"),
+        ("assess_lab_seed_job", "sql", False, None, "sql", "sql_warehouse", None, None, "cron"),
+        ("assess_lab_seed_job", "spark_jar", False, None, "jvm", "all_purpose_cluster",
+         None, None, "cron"),
+        ("landing_ingest", "notebook", False, "GIT", "python", "serverless", None, None,
+         "file_arrival"),
+        ("landing_ingest", "spark_python", True, "GIT", "python", "serverless", None, None,
+         "file_arrival"),
+        ("landing_ingest", "dbt", False, "GIT", "sql", "serverless", None, None, "file_arrival"),
+    ]
+    dump = str(out_db.execute("SELECT * FROM raw.job_tasks").fetchall())
+    for leaked in ("someone@example.com", "do-not-store", "autoloader.py", "s3://", "com.example"):
+        assert leaked not in dump, leaked
+    build_report(out_db)
+    f = features(out_db, coll)
+    assert f["notebook_job_tasks"][:2] == ("observed", 2)
+    assert f["python_job_tasks"][:2] == ("observed", 2)
+    assert f["scala_or_jvm_job_tasks"][:2] == ("observed", 2)
+    assert f["sql_or_dbt_job_tasks"][:2] == ("observed", 2)
+    assert f["all_purpose_cluster_job_tasks"][:2] == ("observed", 1)
+    assert f["event_triggered_jobs"] == ("observed", 1, ["landing_ingest (file_arrival)"])
+
+
+def test_job_tasks_without_jobs_access_is_unknown_not_zero(out_db):
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(jobs_denied=True),
+                          profile=Profile.STANDARD)
+    assert runs(out_db, coll)["job_tasks"]["status"] == "unavailable"
+    build_report(out_db)
+    assert features(out_db, coll)["notebook_job_tasks"][0] == "unknown"
+
+
+def test_job_task_rows_cap_notebook_lookups():
+    from md_migration_assessment.sources.databricks.connection import job_task_rows
+
+    jobs = [{"job_id": i, "settings": {"tasks": [
+        {"notebook_task": {"notebook_path": f"/nb{i}"}}]}} for i in range(3)]
+    calls = []
+    rows, capped = job_task_rows(jobs, lambda p: calls.append(p) or "PYTHON", 2)
+    assert capped is True and len(calls) == 2
+    assert [r["file_language"] for r in rows] == ["python", "python", None]

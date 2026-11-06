@@ -40,6 +40,8 @@ def _plain(name: str, category: str, source: str, predicate: str, obj: str) -> S
 _TBL = "table_catalog || '.' || table_schema || '.' || table_name"
 _COL = _TBL + " || '.' || column_name"
 _FEATURE = "coalesce(table_features, '')"
+_JOB = ("coalesce(job_name, job_id) || ': ' || coalesce(task_type, '?')"
+        " || coalesce(' (' || file_language || ')', '')")
 
 SIGNALS: list[Signal] = [
     # ── table layout / format ──────────────────────────────────────────
@@ -133,6 +135,23 @@ SIGNALS: list[Signal] = [
            "source_table_full_name IS NOT NULL AND target_table_full_name IS NOT NULL "
            "AND split_part(target_table_full_name, '.', 1) NOT IN " + _SYSTEM_CATALOGS,
            "source_table_full_name || ' -> ' || target_table_full_name"),
+    # ── job code (Jobs API task definitions; no code is read) ──────────
+    _plain("notebook_job_tasks", "code", "job_tasks", "task_type = 'notebook'", _JOB),
+    _plain("python_job_tasks", "code", "job_tasks", "file_language = 'python'", _JOB),
+    _plain("scala_or_jvm_job_tasks", "code", "job_tasks",
+           "file_language IN ('scala', 'jvm') OR task_type = 'spark_submit'", _JOB),
+    _plain("sql_or_dbt_job_tasks", "code", "job_tasks",
+           "task_type IN ('sql', 'dbt', 'dbt_cloud', 'dbt_platform') "
+           "OR (task_type = 'notebook' AND file_language = 'sql')", _JOB),
+    _plain("r_job_tasks", "code", "job_tasks", "file_language = 'r'", _JOB),
+    _plain("all_purpose_cluster_job_tasks", "platform", "job_tasks",
+           "compute_kind = 'all_purpose_cluster'", _JOB),
+    _plain("job_task_libraries", "code", "job_tasks", "library_kinds IS NOT NULL",
+           "coalesce(job_name, job_id) || ' (' || library_kinds || ')'"),
+    _plain("event_triggered_jobs", "platform", "job_tasks",
+           "task_index = '0' AND trigger_kind IN ('file_arrival', 'table_update', 'continuous') "
+           "AND NOT coalesce(trigger_paused, false)",
+           "coalesce(job_name, job_id) || ' (' || trigger_kind || ')'"),
     Signal(
         name="dbu_usage", category="platform", source_extractor="billing_usage_daily",
         sql=(

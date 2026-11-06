@@ -20,14 +20,47 @@ from md_migration_assessment.sources.databricks.connection import (
     detail_row,
     details_table,
     hive_tables_table,
+    job_task_rows,
+    job_tasks_table,
 )
 from md_migration_assessment.sources.databricks.manifest import (
     HIVE_TABLES_COMMAND,
+    JOB_TASKS_COMMAND,
     TABLE_DETAILS_COMMAND,
 )
 
 #: legacy Hive metastore: schema -> tables (None = SHOW TABLES fails there)
 HIVE = {"legacy_sales": ["orders_2019", "customers_2019"], "locked": None}
+
+#: Jobs API (jobs/list?expand_tasks=true) payload, synthetic. Paths and
+#: parameters are here to prove they never reach raw.job_tasks.
+JOBS_API = [
+    {"job_id": 101, "settings": {
+        "name": "assess_lab_seed_job",
+        "schedule": {"quartz_cron_expression": "0 0 * * * ?", "pause_status": "UNPAUSED"},
+        "job_clusters": [{"job_cluster_key": "jc", "new_cluster": {"spark_version": "15.4.x-scala2.12"}}],
+        "tasks": [
+            {"task_key": "load", "job_cluster_key": "jc",
+             "notebook_task": {"notebook_path": "/Users/someone@example.com/load_orders",
+                               "base_parameters": {"secret_hint": "do-not-store"}},
+             "libraries": [{"pypi": {"package": "requests"}}, {"maven": {"coordinates": "x:y:1"}}]},
+            {"task_key": "agg", "sql_task": {"query": {"query_id": "q1"}, "warehouse_id": "wh1"}},
+            {"task_key": "jar", "existing_cluster_id": "0101-abc",
+             "spark_jar_task": {"main_class_name": "com.example.Main"}},
+        ]}},
+    {"job_id": 102, "settings": {
+        "name": "landing_ingest",
+        "trigger": {"file_arrival": {"url": "s3://bucket/landing/"}, "pause_status": "UNPAUSED"},
+        "git_source": {"git_url": "https://example.com/repo.git"},
+        "tasks": [
+            {"task_key": "ingest", "notebook_task": {"notebook_path": "ingest/autoloader.py"}},
+            {"task_key": "each", "for_each_task": {"inputs": "[1,2]", "task": {
+                "task_key": "inner", "spark_python_task": {"python_file": "jobs/run.py"}}}},
+            {"task_key": "dbt", "dbt_task": {"commands": ["dbt run"]}},
+        ]}},
+]
+#: workspace notebook path -> get-status language
+NOTEBOOK_LANGUAGES = {"/Users/someone@example.com/load_orders": "SCALA"}
 
 SERVER_ANCHOR = datetime(2030, 1, 1, tzinfo=timezone.utc)
 
@@ -298,7 +331,8 @@ class FakeDatabricks:
     def __init__(self, *, denied_views: set[str] = frozenset(),
                  denied_catalogs: set[str] = frozenset(),
                  detail_errors: dict | None = None,
-                 hive: dict | None = HIVE, hive_cap: int = 2000) -> None:
+                 hive: dict | None = HIVE, hive_cap: int = 2000,
+                 jobs_denied: bool = False) -> None:
         self.db = duckdb.connect()
         self.db.execute(DDL)
         self.db.execute(SEED)
@@ -309,6 +343,7 @@ class FakeDatabricks:
         self.detail_errors = detail_errors or {}
         self.hive = hive
         self.hive_cap = hive_cap
+        self.jobs_denied = jobs_denied
         self.queries: list[str] = []
         self.closed = False
 
@@ -360,6 +395,11 @@ class FakeDatabricks:
                 return self.hive[schema]
 
             return hive_tables_table(list(self.hive), show_tables, self.hive_cap)
+        if command == JOB_TASKS_COMMAND:
+            if self.jobs_denied:
+                raise RuntimeError("PERMISSION_DENIED: no access to the Jobs API")
+            rows, capped = job_task_rows(JOBS_API, NOTEBOOK_LANGUAGES.get, 2000)
+            return job_tasks_table(rows), capped
         assert command == TABLE_DETAILS_COMMAND, command
         rows = []
         for (cat, sch, tbl), d in sorted(DETAILS.items()):

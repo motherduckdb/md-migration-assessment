@@ -37,7 +37,9 @@ from ...privacy import PrivacyClass
 #   hive_metastore_tables (SHOW TABLES walk of the legacy Hive metastore).
 #   v2 also adds the system-table extracts (compute, billing, lakeflow,
 #   lineage, serving, audit, predictive optimization) and grants_summary.
-RAW_SCHEMA_VERSION = 2
+# v3: job_tasks (Jobs API task definitions: task type, notebook language,
+#   compute kind, library kinds, trigger; no code, paths or parameters).
+RAW_SCHEMA_VERSION = 3
 
 #: meta.extract_runs.source_used labels for this adapter's strategies.
 INFORMATION_SCHEMA = "information_schema"
@@ -45,6 +47,7 @@ METASTORE = "system_information_schema"
 DESCRIBE_DETAIL = "describe_detail"
 SHOW_TABLES = "show_tables"
 SYSTEM_TABLES = "system_tables"
+JOBS_API = "jobs_api"
 
 #: Sentinel command the connection expands into one DESCRIBE DETAIL per
 #: visible table (see connection.DatabricksSource.command).
@@ -55,6 +58,17 @@ TABLE_DETAILS_COMMAND = "DESCRIBE DETAIL <each visible table>"
 HIVE_TABLES_COMMAND = "SHOW TABLES <each hive_metastore schema>"
 HIVE_TABLE_COLUMNS: tuple[str, ...] = (
     "table_catalog", "table_schema", "table_name", "list_error",
+)
+
+#: Sentinel command for job definitions, which no system table carries:
+#: the Jobs API (jobs/list with expand_tasks) plus one workspace
+#: get-status per workspace notebook for its language. Code, notebook
+#: paths, task keys and parameters are read in memory and never stored.
+JOB_TASKS_COMMAND = "JOBS API <each visible job's tasks>"
+JOB_TASK_COLUMNS: tuple[str, ...] = (
+    "job_id", "job_name", "task_index", "task_type", "in_for_each", "code_source",
+    "file_language", "compute_kind", "spark_version", "library_kinds",
+    "trigger_kind", "trigger_paused", "list_error",
 )
 
 TABLE_DETAIL_COLUMNS: tuple[str, ...] = (
@@ -305,4 +319,18 @@ EXTRACTORS: list[Extractor] = [
     _system("workspace_feature_usage", "system.access.audit", {}),
     _system("predictive_optimization_rollup",
             "system.storage.predictive_optimization_operations_history", {}),
+    Extractor(
+        name="job_tasks",
+        category="features",
+        min_profile=Profile.STANDARD,
+        sources=(Command(
+            JOB_TASKS_COMMAND, JOB_TASK_COLUMNS, JOBS_API, visibility_bound=True,
+        ),),
+        required_privilege="CAN VIEW on each job (workspace admins see all jobs)",
+        sensitive_fields={
+            "job_id": PrivacyClass.OBJECT_NAME,
+            "job_name": PrivacyClass.OBJECT_NAME,
+            "list_error": PrivacyClass.OBJECT_NAME,
+        },
+    ),
 ]

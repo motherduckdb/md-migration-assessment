@@ -26,6 +26,8 @@ from ..base import SessionInfo
 from .manifest import (
     HIVE_TABLE_COLUMNS,
     HIVE_TABLES_COMMAND,
+    JOB_TASK_COLUMNS,
+    JOB_TASKS_COMMAND,
     TABLE_DETAIL_COLUMNS,
     TABLE_DETAILS_COMMAND,
 )
@@ -180,6 +182,118 @@ def hive_tables_table(schemas, show_tables, cap: int) -> tuple[pa.Table, bool]:
     return pa.Table.from_pylist(rows, schema=schema), truncated
 
 
+#: Notebook/file extensions -> language, for Git-sourced code (the workspace
+#: get-status call only answers for workspace objects).
+_EXT_LANGUAGE = {".py": "python", ".ipynb": "python", ".sql": "sql",
+                 ".scala": "scala", ".r": "r"}
+
+#: Task-type keys of a Jobs API task, in the API's own naming, minus
+#: the "_task" suffix (notebook, spark_python, dbt, sql, ...).
+def _task_type(task: dict) -> str | None:
+    keys = sorted(k for k in task if k.endswith("_task") and task[k] is not None)
+    return keys[0].removesuffix("_task") if keys else None
+
+
+def _trigger_kind(settings: dict) -> tuple[str, bool]:
+    """How a job starts, and whether that trigger is paused."""
+    if settings.get("continuous"):
+        c = settings["continuous"]
+        return "continuous", c.get("pause_status") == "PAUSED"
+    trig = settings.get("trigger")
+    if trig:
+        kind = next((k for k in ("file_arrival", "table_update", "table", "periodic")
+                     if trig.get(k)), "other")
+        return ("table_update" if kind == "table" else kind,
+                trig.get("pause_status") == "PAUSED")
+    if settings.get("schedule"):
+        return "cron", settings["schedule"].get("pause_status") == "PAUSED"
+    return "manual", False
+
+
+def _language_from_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    lower = path.lower()
+    return next((lang for ext, lang in _EXT_LANGUAGE.items() if lower.endswith(ext)), None)
+
+
+def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
+    """Flatten Jobs API job objects into raw.job_tasks rows.
+
+    ``notebook_language(path)`` returns a workspace notebook's language
+    (PYTHON/SQL/SCALA/R) or None; it is called at most ``cap`` times. Paths,
+    task keys, parameters and code never reach a row: only the task type,
+    language, compute kind, Spark version, library kinds and trigger.
+    """
+    rows: list[dict] = []
+    lookups = 0
+    lookups_capped = False
+    for job in jobs:
+        settings = job.get("settings") or {}
+        trigger, paused = _trigger_kind(settings)
+        clusters = {c.get("job_cluster_key"): (c.get("new_cluster") or {})
+                    for c in settings.get("job_clusters") or []}
+        git = bool(settings.get("git_source"))
+        base = {"job_id": str(job.get("job_id")), "job_name": settings.get("name"),
+                "trigger_kind": trigger, "trigger_paused": paused}
+        for i, outer in enumerate(settings.get("tasks") or []):
+            task, in_each = outer, False
+            if outer.get("for_each_task"):
+                task, in_each = outer["for_each_task"].get("task") or {}, True
+            ttype = _task_type(task)
+            body = task.get(f"{ttype}_task") or {} if ttype else {}
+            source = body.get("source") or ("GIT" if git and ttype in (
+                "notebook", "spark_python", "dbt", "sql") else
+                "WORKSPACE" if ttype in ("notebook", "spark_python") else None)
+            language = None
+            if ttype == "notebook":
+                path = body.get("notebook_path")
+                language = _language_from_path(path)
+                if language is None and source != "GIT" and path:
+                    if lookups < cap:
+                        lookups += 1
+                        try:
+                            language = notebook_language(path)
+                        except Exception:  # noqa: BLE001 - one notebook must not sink the rest
+                            language = None
+                    else:
+                        lookups_capped = True
+            elif ttype in ("spark_python", "python_wheel", "python_operator"):
+                language = "python"
+            elif ttype in ("spark_jar",):
+                language = "jvm"
+            elif ttype in ("sql", "dbt", "dbt_cloud", "dbt_platform"):
+                language = "sql"
+            if task.get("existing_cluster_id"):
+                compute, spark = "all_purpose_cluster", None
+            elif task.get("new_cluster") or task.get("job_cluster_key"):
+                nc = task.get("new_cluster") or clusters.get(task.get("job_cluster_key"), {})
+                compute, spark = "job_cluster", nc.get("spark_version")
+            elif ttype == "sql":
+                compute, spark = "sql_warehouse", None
+            elif ttype == "pipeline":
+                compute, spark = "pipeline", None
+            elif ttype in ("run_job", "condition") or ttype is None:
+                compute, spark = None, None
+            else:
+                compute, spark = "serverless", None
+            kinds = sorted({k for lib in task.get("libraries") or [] for k in lib})
+            rows.append({**base, "task_index": str(i), "task_type": ttype,
+                         "in_for_each": in_each, "code_source": source,
+                         "file_language": language.lower() if language else None,
+                         "compute_kind": compute, "spark_version": spark,
+                         "library_kinds": ",".join(kinds) or None, "list_error": None})
+    return rows, lookups_capped
+
+
+def job_tasks_table(rows: list[dict]) -> pa.Table:
+    schema = pa.schema([
+        (c, pa.bool_() if c in ("in_for_each", "trigger_paused") else pa.string())
+        for c in JOB_TASK_COLUMNS
+    ])
+    return pa.Table.from_pylist(rows, schema=schema)
+
+
 def details_table(rows: list[dict]) -> pa.Table:
     schema = pa.schema([
         (c, pa.int64() if c in ("num_files", "size_in_bytes")
@@ -209,10 +323,12 @@ class DatabricksSource:
     """Live Databricks SQL connection. Tests substitute a fake with the same shape."""
 
     def __init__(self, conn, detail_max_tables: int = DEFAULT_DETAIL_MAX_TABLES,
-                 deployment: str | None = None) -> None:
+                 deployment: str | None = None, cfg: DatabricksConfig | None = None) -> None:
         self._conn = conn
         self._detail_max_tables = detail_max_tables
         self._deployment = deployment
+        self._cfg = cfg
+        self._api = None
 
     @classmethod
     def open(cls, cfg: DatabricksConfig) -> "DatabricksSource":
@@ -223,7 +339,7 @@ class DatabricksSource:
                 "the Databricks SQL connector is not installed; install the "
                 "'databricks' extra: pip install 'md-migration-assessment[databricks]'"
             ) from exc
-        return cls(dbsql.connect(**cfg.connect_kwargs()), cfg.detail_max_tables, cfg.host)
+        return cls(dbsql.connect(**cfg.connect_kwargs()), cfg.detail_max_tables, cfg.host, cfg)
 
     def _fetch(self, sql: str) -> pa.Table:
         with self._conn.cursor() as cur:
@@ -236,6 +352,8 @@ class DatabricksSource:
     def command(self, command: str) -> tuple[pa.Table, bool]:
         if command == HIVE_TABLES_COMMAND:
             return self._hive_tables()
+        if command == JOB_TASKS_COMMAND:
+            return self._job_tasks()
         if command != TABLE_DETAILS_COMMAND:
             raise ValueError(f"unsupported Databricks command: {command!r}")
         cap = self._detail_max_tables
@@ -252,6 +370,53 @@ class DatabricksSource:
             except Exception as exc:  # noqa: BLE001 - one table must not sink the rest
                 rows.append(detail_row(cat, sch, tbl, None, error=str(exc)))
         return details_table(rows), truncated
+
+    def _rest(self, path: str, query: dict) -> dict:
+        """GET a workspace REST endpoint with the same credentials as SQL.
+        API errors are re-raised with their error code first, so the
+        adapter's classifier sees PERMISSION_DENIED and friends."""
+        if self._api is None:
+            if self._cfg is None:
+                raise RuntimeError("PERMISSION_DENIED: no REST credentials for this connection")
+            from databricks.sdk import WorkspaceClient  # deferred: the databricks extra
+
+            cfg = self._cfg
+            kw: dict = {"host": f"https://{cfg.host}"}
+            if cfg.auth_mode == "pat":
+                kw["token"] = cfg.token
+            elif cfg.auth_mode == "m2m":
+                kw.update(client_id=cfg.client_id, client_secret=cfg.client_secret)
+            else:
+                kw["auth_type"] = "external-browser"
+            self._api = WorkspaceClient(**kw).api_client
+        try:
+            return self._api.do("GET", path, query=query) or {}
+        except Exception as exc:  # normalized for classify_error, then re-raised
+            code = getattr(exc, "error_code", None) or type(exc).__name__
+            if type(exc).__name__ in ("PermissionDenied", "Unauthenticated"):
+                code = "PERMISSION_DENIED"
+            raise RuntimeError(f"{code}: {exc}") from exc
+
+    def _job_tasks(self) -> tuple[pa.Table, bool]:
+        cap = self._detail_max_tables
+        jobs: list[dict] = []
+        token = None
+        while True:
+            q = {"expand_tasks": "true", "limit": 100}
+            if token:
+                q["page_token"] = token
+            page = self._rest("/api/2.2/jobs/list", q)
+            jobs.extend(page.get("jobs") or [])
+            token = page.get("next_page_token")
+            if not token or len(jobs) > cap:
+                break
+        truncated = len(jobs) > cap or bool(token)
+
+        def language(path: str) -> str | None:
+            return self._rest("/api/2.0/workspace/get-status", {"path": path}).get("language")
+
+        rows, capped = job_task_rows(jobs[:cap], language, cap)
+        return job_tasks_table(rows), truncated or capped
 
     def _hive_tables(self) -> tuple[pa.Table, bool]:
         """Walk the legacy Hive metastore. A disabled or inaccessible

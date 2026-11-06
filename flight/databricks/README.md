@@ -20,7 +20,10 @@ pin it in `requirements.txt` and drop `load_collector()`.
 
 1. Databricks: create a service principal and an OAuth secret. Give it Can use
    on the SQL warehouse, then run the catalog and `system` schema grants in
-   the Cookbook. The `system` grants need a metastore admin.
+   the Cookbook. The `system` grants need a metastore admin. For job code
+   (the `job_tasks` extract, from the Jobs API) give it CAN VIEW on the jobs,
+   or make it a workspace admin. Otherwise it sees only jobs it owns, and the
+   counts are minimums.
 2. MotherDuck: create a Flights secret named `databricks_creds` that holds
    `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`.
 3. Run `./upload_wheel.sh`.
