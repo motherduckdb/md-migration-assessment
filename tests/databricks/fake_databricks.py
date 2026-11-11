@@ -172,6 +172,7 @@ INSERT INTO connections VALUES ('pg_fed', 'POSTGRESQL', 'USERNAME_PASSWORD', '{O
 
 
 def _detail(fmt="delta", parts=(), clust=(), feats=(), props=None):
+    """One synthetic DESCRIBE DETAIL result."""
     return {
         "format": fmt, "location": None, "numFiles": 4, "sizeInBytes": 1000,
         "partitionColumns": list(parts), "clusteringColumns": list(clust),
@@ -328,6 +329,10 @@ _RAW_LITERAL_RE = re.compile(r"\br'")
 
 
 class FakeDatabricks:
+    """Fake connection that runs the real extract SQL on DuckDB.
+
+    Options simulate denied views and catalogs, table detail errors, a disabled Hive metastore and no Jobs API access.
+    """
     def __init__(self, *, denied_views: set[str] = frozenset(),
                  denied_catalogs: set[str] = frozenset(),
                  detail_errors: dict | None = None,
@@ -348,7 +353,9 @@ class FakeDatabricks:
         self.closed = False
 
     def _rewrite(self, sql: str) -> str:
+        """Point the query at the in-memory tables. Denied views and catalogs raise a permission error."""
         def per_cat(m):
+            """Swap a per-catalog view for its rows in that catalog."""
             cat, view = m.group(1).replace("``", "`"), m.group(2)
             if view in self.denied_views or cat in self.denied_catalogs:
                 raise PermissionError(
@@ -357,12 +364,14 @@ class FakeDatabricks:
             return f"(SELECT * FROM {view} WHERE {CATALOG_COL[view]} = '{cat}')"
 
         def system(m):
+            """Swap a metastore-wide view for its fake table."""
             view = m.group(1)
             if view in self.denied_views:
                 raise PermissionError("PERMISSION_DENIED: metastore admin required")
             return view
 
         def system_table(m):
+            """Swap a system table for its fake table."""
             schema, table = m.group(1), m.group(2)
             if f"{schema}_{table}" in self.denied_views:
                 raise PermissionError(
@@ -378,10 +387,12 @@ class FakeDatabricks:
         return _SYSTEM_RE.sub(system, _PER_CAT_RE.sub(per_cat, sql))
 
     def reader(self, sql: str) -> pa.Table:
+        """Record the query, then run it against the fake tables."""
         self.queries.append(sql)
         return self.db.execute(self._rewrite(sql)).arrow()
 
     def command(self, command: str) -> tuple[pa.Table, bool]:
+        """Answer the three non-SQL extracts (Hive tables, job tasks, table details) from the synthetic estate."""
         if command == HIVE_TABLES_COMMAND:
             if self.hive is None:
                 raise RuntimeError(
@@ -390,6 +401,7 @@ class FakeDatabricks:
                 )
 
             def show_tables(schema):
+                """Tables in one Hive schema. A locked schema raises a permission error."""
                 if self.hive[schema] is None:
                     raise PermissionError("[INSUFFICIENT_PERMISSIONS] no USAGE on schema")
                 return self.hive[schema]
@@ -408,13 +420,17 @@ class FakeDatabricks:
         return details_table(rows), False
 
     def list_databases(self) -> list[str]:
+        """The synthetic catalogs the walk visits."""
         return ["assess_lab", "workspace"]
 
     def session_info(self) -> SessionInfo:
+        """A fixed fake workspace, version and region."""
         return SessionInfo("dbc-test.cloud.databricks.com", "2026.43", "aws:us-east-2")
 
     def server_time(self) -> datetime:
+        """A fixed server clock. The workload window is measured from it."""
         return SERVER_ANCHOR
 
     def close(self) -> None:
+        """Note that the connection was closed."""
         self.closed = True

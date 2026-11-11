@@ -89,10 +89,12 @@ def load_sql_path(path: str) -> str:
 
 
 def extractor_version(ex: Extractor) -> str:
+    """Short hash of an extract's SQL, so a changed query shows up in the output."""
     return _neutral_version(ex, load_sql_path)
 
 
 def _per_catalog(name: str, scope: dict[str, str], sensitive: dict, **rest) -> Extractor:
+    """Extract that runs the same query in every catalog and honors --scope."""
     return Extractor(
         name=name,
         category=rest.pop("category", "catalog"),
@@ -110,6 +112,7 @@ def _per_catalog(name: str, scope: dict[str, str], sensitive: dict, **rest) -> E
 def _metastore(
     name: str, sensitive: dict, scope: dict[str, str] | None = None, *, bound: bool = True
 ) -> Extractor:
+    """Extract that runs once for the whole metastore."""
     # Unity Catalog's system.information_schema lists only securables the
     # collecting principal has a privilege on, so a zero is not absence.
     return Extractor(

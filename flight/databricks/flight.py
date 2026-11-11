@@ -33,6 +33,7 @@ PKG_DIR = Path("/tmp/md-assess-pkg")
 
 
 def main() -> None:
+    """Collect from Databricks into a temp file, then publish only the redacted database."""
     # The Flight container has no local time zone; pin UTC before any DuckDB
     # connection opens here or in the md-assess subprocesses.
     os.environ["TZ"] = "UTC"
@@ -104,6 +105,7 @@ def load_collector(wheel_db: str, version: str) -> None:
 
 
 def md_assess(*args: str) -> list[str]:
+    """Command line that runs the md-assess app from the unpacked wheel."""
     # The wheel is unpacked, not installed, so there is no md-assess console
     # script; call the Typer app directly.
     return [sys.executable, "-c",
@@ -111,6 +113,7 @@ def md_assess(*args: str) -> list[str]:
 
 
 def collect(collection: Path, profile: str, history_days: int, scope: list[str]) -> None:
+    """Run the Databricks collection and write everything it reads to a local file."""
     args = md_assess("collect", "--source", "databricks", "--profile", profile,
                      "--history-days", str(history_days), "--output", str(collection))
     for entry in scope:
@@ -121,6 +124,7 @@ def collect(collection: Path, profile: str, history_days: int, scope: list[str])
 
 
 def collection_deployment(collection: Path) -> str | None:
+    """Workspace host recorded by the latest collection, or None if there is none."""
     con = duckdb.connect(str(collection), read_only=True)
     try:
         row = con.execute("SELECT source_deployment FROM meta.collections "
@@ -131,6 +135,7 @@ def collection_deployment(collection: Path) -> str | None:
 
 
 def guard_existing_database(database: str, replace: bool) -> None:
+    """Stop unless the target database is absent or an earlier assessment that may be replaced."""
     # Refuse to drop anything that is not an earlier assessment.
     con = duckdb.connect("md:")
     try:
@@ -153,6 +158,7 @@ def guard_existing_database(database: str, replace: bool) -> None:
 
 
 def publish(collection: Path, database: str, dive_title: str, replace: bool) -> None:
+    """Publish the redacted database and its Dive, then print what was kept or dropped."""
     # Databricks variables are removed first: publish needs only MOTHERDUCK_TOKEN.
     pub_env = {k: v for k, v in os.environ.items() if not k.startswith("DATABRICKS_")
                and not any(k.endswith("_" + p) for p in CREDENTIAL_PARAMS)}
@@ -184,6 +190,7 @@ def publish(collection: Path, database: str, dive_title: str, replace: bool) -> 
 
 
 def resolve_databricks_credentials(secret_name: str) -> None:
+    """Check the Databricks settings are present and set the names md-assess reads."""
     # Copy each credential from the namespaced secret param onto the bare name
     # md-assess reads, so a raw alias from another secret cannot win.
     for param in CREDENTIAL_PARAMS:
@@ -206,10 +213,12 @@ def resolve_databricks_credentials(secret_name: str) -> None:
 
 
 def env(name: str, default: str) -> str:
+    """Read an environment variable, trimmed, with a default."""
     return os.environ.get(name, default).strip()
 
 
 def env_bool(name: str, default: bool) -> bool:
+    """Read a yes/no environment variable. Unset or empty gives the default."""
     value = os.environ.get(name)
     if value is None or not value.strip():
         return default
@@ -217,6 +226,7 @@ def env_bool(name: str, default: bool) -> bool:
 
 
 def validate_identifier(name: str, value: str) -> str:
+    """Return the value if it is a plain database name, else raise."""
     if not IDENTIFIER_RE.fullmatch(value):
         raise ValueError(f"{name} must match {IDENTIFIER_RE.pattern}, got {value!r}")
     return value

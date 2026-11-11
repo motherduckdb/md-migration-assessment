@@ -1,3 +1,5 @@
+-- User-defined functions in each catalog, with language and body.
+-- The body stays in the local file; publish drops it.
 SELECT routine_catalog, routine_schema, routine_name, routine_type, routine_body,
        external_language, data_type, is_deterministic, security_type,
        routine_owner, created, last_altered, routine_definition, comment

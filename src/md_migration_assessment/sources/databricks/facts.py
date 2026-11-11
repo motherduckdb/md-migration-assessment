@@ -84,6 +84,10 @@ _BASE = """
 
 
 def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
+    """Bytes and file count per table, views left out.
+
+    Delta gives one current size, so time-travel, fail-safe and clone bytes stay unknown.
+    """
     con.execute(_SIZING_DDL)
     if not table_exists(con, "raw", "tables"):
         return
@@ -107,6 +111,7 @@ def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _build_readable_in_place(con: duckdb.DuckDBPyConnection) -> None:
+    """How each table could be read from MotherDuck without a copy, or what has to happen first."""
     con.execute(_READ_DDL)
     if not table_exists(con, "raw", "tables"):
         return
@@ -187,6 +192,10 @@ _WARNINGS = {
 
 
 def _build_collection_warnings(con: duckdb.DuckDBPyConnection) -> None:
+    """Flag tables with a row filter or column mask.
+
+    A copy has to run as a principal the policy exempts, or rows go missing.
+    """
     con.execute(_WARN_DDL)
     for source, (warning, fn_col, cols_col, detail) in _WARNINGS.items():
         if not table_exists(con, "raw", source):
@@ -208,6 +217,7 @@ def _build_collection_warnings(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _status(con: duckdb.DuckDBPyConnection, extractor: str) -> str:
+    """SQL for the run status of one extract in the same collection."""
     return (
         f"(SELECT any_value(status) FROM meta.extract_runs r "
         f"WHERE r.collection_id = x.collection_id AND r.extractor = '{extractor}')"
@@ -215,6 +225,7 @@ def _status(con: duckdb.DuckDBPyConnection, extractor: str) -> str:
 
 
 def _wh_join(con: duckdb.DuckDBPyConnection, alias: str = "x") -> tuple[str, str]:
+    """Name column and join that turn warehouse ids into names. The name is NULL without a warehouses extract."""
     if not table_exists(con, "raw", "warehouses"):
         return "CAST(NULL AS VARCHAR)", ""
     return (
@@ -237,6 +248,7 @@ CREATE TABLE report.spend_profile (
 
 
 def _build_spend_profile(con: duckdb.DuckDBPyConnection) -> None:
+    """Daily DBUs and list cost per warehouse or product. Rows in other units are left out."""
     con.execute(_SPEND_DDL)
     if not table_exists(con, "raw", "billing_usage_daily"):
         return
@@ -275,6 +287,10 @@ CREATE TABLE report.workload_rollup (
 
 
 def _build_workload_rollup(con: duckdb.DuckDBPyConnection) -> None:
+    """Daily query counts, time, bytes and spill per warehouse and statement type.
+
+    Remote spill is not collected, so those columns are NULL.
+    """
     con.execute(_ROLLUP_DDL)
     if not table_exists(con, "raw", "query_workload_rollup"):
         return
@@ -314,6 +330,7 @@ CREATE TABLE report.concurrency_profile (
 
 
 def _build_concurrency_profile(con: duckdb.DuckDBPyConnection) -> None:
+    """Peak concurrent queries per warehouse per hour. Average and busy time are NULL."""
     con.execute(_CONC_DDL)
     if not table_exists(con, "raw", "query_concurrency"):
         return
@@ -346,6 +363,7 @@ CREATE TABLE report.tool_fingerprints (
 
 
 def _build_tool_fingerprints(con: duckdb.DuckDBPyConnection) -> None:
+    """Which client tools run queries, with how each was detected and how sure we are."""
     con.execute(_TOOLS_DDL)
     if not table_exists(con, "raw", "client_app_fingerprints"):
         return
@@ -466,6 +484,7 @@ _DIALECT_NOTE = (
 
 
 def _build_dialect_constructs(con: duckdb.DuckDBPyConnection) -> None:
+    """Count of queries using each Databricks-specific SQL construct. Counts only, never query text."""
     con.execute(_DIALECT_DDL)
     if not table_exists(con, "raw", "query_dialect_constructs"):
         return

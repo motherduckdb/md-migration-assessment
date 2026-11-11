@@ -43,6 +43,7 @@ GRAMMAR = ScopeGrammar(
 
 @dataclass(frozen=True)
 class DatabricksAdapter:
+    """What the collector needs from Databricks: extracts, scope rules, signals and report facts."""
     name: str = "databricks"
     raw_schema_version: int = RAW_SCHEMA_VERSION
     extractors: list = field(default_factory=lambda: EXTRACTORS)
@@ -52,14 +53,17 @@ class DatabricksAdapter:
     fact_builders: tuple = FACT_BUILDERS
 
     def open(self) -> Connection:
+        """Connect to the workspace using the DATABRICKS_* environment variables."""
         from .connection import DatabricksConfig, DatabricksSource
 
         return DatabricksSource.open(DatabricksConfig.from_env())
 
     def load_sql(self, path: str) -> str:
+        """Text of one extract query, by its path under queries/."""
         return load_sql_path(path)
 
     def classify_error(self, exc: BaseException) -> str:
+        """Say "unavailable" for missing access or features, "failed" for anything else."""
         return "unavailable" if _UNAVAILABLE_RE.search(str(exc)) else "failed"
 
 

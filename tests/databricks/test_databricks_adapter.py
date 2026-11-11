@@ -31,6 +31,7 @@ from md_migration_assessment.sources.databricks.manifest import (
 
 
 def runs(con, coll):
+    """Extract run status, source, scope and detail per extract, for one collection."""
     out = {}
     for name, status, used, scope, detail in con.execute(
         "SELECT extractor, status, source_used, actual_scope, error_detail "
@@ -41,6 +42,7 @@ def runs(con, coll):
 
 
 def features(con, coll):
+    """Feature inventory rows by name: status, count and sample objects."""
     return {
         r[0]: (r[1], r[2], r[3]) for r in con.execute(
             "SELECT feature, observation_status, count, sample_objects "
@@ -54,6 +56,7 @@ def features(con, coll):
 
 
 def test_registry_and_protocols():
+    """Databricks is a registered source, and the adapter and fake match the shared interfaces."""
     assert "databricks" in SOURCE_KINDS
     assert get_adapter("databricks") is ADAPTER
     assert isinstance(ADAPTER, SourceAdapter)
@@ -61,6 +64,7 @@ def test_registry_and_protocols():
 
 
 def test_every_extractor_sql_resource_loads_and_has_scope_hook():
+    """Every extract query loads, and scoped ones have the placeholder that --scope fills in."""
     # Catalog-scoped extracts must take --scope; account-level system tables
     # (billing, compute, lakeflow, audit) have no catalog column to scope by.
     for ex in ADAPTER.extractors:
@@ -72,7 +76,9 @@ def test_every_extractor_sql_resource_loads_and_has_scope_hook():
 
 
 def test_storage_credentials_never_selects_the_secret():
+    """The credential, connection options and URL columns are never selected."""
     def select_list(path):
+        """Column names in an extract's SELECT list, ignoring comment lines."""
         sql = "\n".join(
             ln for ln in load_sql_path(path).splitlines() if not ln.lstrip().startswith("--")
         )
@@ -91,6 +97,7 @@ def test_storage_credentials_never_selects_the_secret():
     ("connection reset by peer", "failed"),
 ])
 def test_classify_error(msg, kind):
+    """Permission and missing-object errors count as unavailable. Other errors count as failed."""
     assert ADAPTER.classify_error(RuntimeError(msg)) == kind
 
 
@@ -98,6 +105,7 @@ def test_classify_error(msg, kind):
 
 
 def test_lite_collection_is_complete_and_walks_catalogs(out_db):
+    """A lite run completes its extracts, skips standard-only ones, records the source, and keeps secret columns out."""
     conn = FakeDatabricks()
     coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
     st = runs(out_db, coll)
@@ -129,6 +137,7 @@ def test_lite_collection_is_complete_and_walks_catalogs(out_db):
 
 
 def test_signals_count_the_seeded_features(out_db):
+    """Each feature count matches the seeded estate. A zero from a visibility-bound listing is unknown."""
     coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
     build_report(out_db)
     f = features(out_db, coll)
@@ -160,6 +169,7 @@ def test_signals_count_the_seeded_features(out_db):
 
 
 def test_scope_filters_sql_and_command_output(out_db):
+    """Scope limits both the SQL extracts and the table details, and other catalogs are never queried."""
     conn = FakeDatabricks()
     scope = Scope.parse(["assess_lab.core"], ADAPTER.scope)
     coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE, scope=scope)
@@ -176,11 +186,13 @@ def test_scope_filters_sql_and_command_output(out_db):
 
 
 def test_scope_entries_are_case_folded_to_unity_catalog_lower_case():
+    """Scope names are lower-cased to match Unity Catalog."""
     scope = Scope.parse(["Assess_Lab"], ADAPTER.scope)
     assert scope.databases == frozenset({"assess_lab"})
 
 
 def test_privilege_gap_on_one_catalog_is_partial(out_db):
+    """A missing grant on one catalog marks the run partial, not failed."""
     conn = FakeDatabricks(denied_catalogs={"workspace"})
     coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
     row = runs(out_db, coll)["tables"]
@@ -189,6 +201,7 @@ def test_privilege_gap_on_one_catalog_is_partial(out_db):
 
 
 def test_unavailable_metastore_view_reports_unknown_not_zero(out_db):
+    """A denied metastore view shows as unknown in the report, not zero."""
     conn = FakeDatabricks(denied_views={"connections"})
     coll = run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
     assert runs(out_db, coll)["connections"]["status"] == "unavailable"
@@ -197,6 +210,7 @@ def test_unavailable_metastore_view_reports_unknown_not_zero(out_db):
 
 
 def test_detail_errors_are_kept_per_table(out_db):
+    """A failed DESCRIBE DETAIL on one table is recorded and counted, and the run still completes."""
     conn = FakeDatabricks(detail_errors={
         ("assess_lab", "core", "customers"): "[INSUFFICIENT_PERMISSIONS] no SELECT",
     })
@@ -210,6 +224,7 @@ def test_detail_errors_are_kept_per_table(out_db):
 
 
 def test_readable_in_place_paths(out_db):
+    """Each table gets the right way to read it from MotherDuck, and hidden tables are left out."""
     run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
     build_report(out_db)
     paths = dict(out_db.execute(
@@ -229,6 +244,7 @@ def test_readable_in_place_paths(out_db):
 
 
 def test_sizing_joins_details_and_flags_system_furniture(out_db):
+    """Sizing takes bytes and files from table details, marks hidden tables as system, and skips views."""
     run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
     build_report(out_db)
     rows = {r[0]: r[1:] for r in out_db.execute(
@@ -240,6 +256,7 @@ def test_sizing_joins_details_and_flags_system_furniture(out_db):
 
 
 def test_fact_relations_exist_without_evidence(out_db):
+    """The report tables still exist when the tables listing is denied."""
     conn = FakeDatabricks(denied_views={"tables"})
     run_collection(out_db, ADAPTER, conn, profile=Profile.LITE)
     build_report(out_db)
@@ -251,6 +268,7 @@ def test_fact_relations_exist_without_evidence(out_db):
 
 
 def test_handoff_strips_source_bodies(tmp_path):
+    """The published handoff drops view and function bodies."""
     src = str(tmp_path / "private.duckdb")
     con = open_output(src)
     run_collection(con, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
@@ -266,6 +284,7 @@ def test_handoff_strips_source_bodies(tmp_path):
 
 
 def test_config_from_env(monkeypatch):
+    """Config reads host, warehouse and login from the environment and picks the matching auth mode."""
     for k in ("DATABRICKS_TOKEN", "DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET",
               "DATABRICKS_HTTP_PATH", "DATABRICKS_DETAIL_MAX_TABLES"):
         monkeypatch.delenv(k, raising=False)
@@ -281,6 +300,7 @@ def test_config_from_env(monkeypatch):
 
 
 def test_config_requires_host_and_warehouse(monkeypatch):
+    """Config fails with a clear error when the host or warehouse is missing."""
     monkeypatch.delenv("DATABRICKS_HOST", raising=False)
     with pytest.raises(ValueError, match="DATABRICKS_HOST"):
         DatabricksConfig.from_env()
@@ -292,6 +312,7 @@ def test_config_requires_host_and_warehouse(monkeypatch):
 
 
 def test_detail_row_flattens_describe_detail():
+    """A DESCRIBE DETAIL result becomes one flat row, with empty values as None."""
     row = detail_row("c", "s", "t", {
         "format": "delta", "location": "", "numFiles": 2, "sizeInBytes": 10,
         "partitionColumns": ["d"], "clusteringColumns": [],
@@ -306,6 +327,7 @@ def test_detail_row_flattens_describe_detail():
 
 
 class _Cursor:
+    """Fake cursor: lists three tables, fails to describe table b, and describes the rest."""
     def __init__(self, owner):
         self.owner = owner
 
@@ -330,6 +352,7 @@ class _Cursor:
 
 
 class _DbApi:
+    """Fake connection that hands out cursors and records every statement."""
     def __init__(self):
         self.sql = []
 
@@ -341,6 +364,7 @@ class _DbApi:
 
 
 def test_source_command_caps_and_isolates_per_table_errors():
+    """Table details stop at the cap and say so, and an error on one table does not stop the rest."""
     api = _DbApi()
     src = DatabricksSource(api, detail_max_tables=2)
     table, truncated = src.command(TABLE_DETAILS_COMMAND)
@@ -352,6 +376,7 @@ def test_source_command_caps_and_isolates_per_table_errors():
 
 
 def test_detail_targets_skip_views_and_hidden_tables():
+    """The table list for DESCRIBE DETAIL leaves out views, hidden tables and system catalogs."""
     sql = detail_targets_sql(10)
     assert "'VIEW'" not in sql and "__materialization_" in sql and "'samples'" in sql
 
@@ -360,6 +385,7 @@ def test_detail_targets_skip_views_and_hidden_tables():
 
 
 def test_standard_collects_workload_rollup_without_statement_text(out_db):
+    """The workload rollup counts only in-window queries and never stores query text or user names."""
     coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
     st = runs(out_db, coll)
     assert st["query_workload_rollup"]["status"] == "complete"
@@ -380,6 +406,7 @@ def test_standard_collects_workload_rollup_without_statement_text(out_db):
 
 
 def test_workload_without_system_grant_is_unknown_not_zero(out_db):
+    """Without access to query history, the workload shows as unknown, not zero."""
     conn = FakeDatabricks(denied_views={"query_history"})
     coll = run_collection(out_db, ADAPTER, conn, profile=Profile.STANDARD)
     assert runs(out_db, coll)["query_workload_rollup"]["status"] == "unavailable"
@@ -388,6 +415,7 @@ def test_workload_without_system_grant_is_unknown_not_zero(out_db):
 
 
 def test_collection_warnings_flag_filtered_and_masked_tables(out_db):
+    """Tables with a row filter or column mask are flagged with their policy function."""
     run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
     build_report(out_db)
     rows = out_db.execute(
@@ -398,6 +426,7 @@ def test_collection_warnings_flag_filtered_and_masked_tables(out_db):
 
 
 def test_report_columns_are_all_classified_for_handoff(out_db):
+    """Every text column in the report tables has a privacy class, so none is left unclassified at publish."""
     from md_migration_assessment.handoff import classify_aggregate_columns
 
     run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
@@ -413,6 +442,7 @@ def test_report_columns_are_all_classified_for_handoff(out_db):
 
 
 def test_hive_metastore_walk_records_schema_errors_and_disabled_hms(out_db, tmp_path):
+    """A schema that cannot be listed is recorded, and a disabled Hive metastore shows as unavailable."""
     coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
     errs = out_db.execute(
         "SELECT table_schema, list_error FROM raw.hive_metastore_tables "
@@ -428,6 +458,7 @@ def test_hive_metastore_walk_records_schema_errors_and_disabled_hms(out_db, tmp_
 
 
 def test_hive_metastore_walk_caps_tables():
+    """The Hive table listing stops at the cap and says so."""
     from md_migration_assessment.sources.databricks.connection import hive_tables_table
 
     table, truncated = hive_tables_table(["a", "b"], lambda s: [s + "1", s + "2"], 3)
@@ -466,6 +497,7 @@ def test_standard_builds_dive_report_tables_and_system_signals(out_db):
 
 
 def test_job_tasks_classify_code_without_paths_or_parameters(out_db):
+    """Job tasks keep only type, language and compute. Paths, parameters and code never land."""
     coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
     assert runs(out_db, coll)["job_tasks"]["status"] == "complete"
     rows = out_db.execute(
@@ -498,6 +530,7 @@ def test_job_tasks_classify_code_without_paths_or_parameters(out_db):
 
 
 def test_job_tasks_without_jobs_access_is_unknown_not_zero(out_db):
+    """No Jobs API access shows the job features as unknown, not zero."""
     coll = run_collection(out_db, ADAPTER, FakeDatabricks(jobs_denied=True),
                           profile=Profile.STANDARD)
     assert runs(out_db, coll)["job_tasks"]["status"] == "unavailable"
@@ -506,6 +539,7 @@ def test_job_tasks_without_jobs_access_is_unknown_not_zero(out_db):
 
 
 def test_job_task_rows_cap_notebook_lookups():
+    """Notebook language lookups stop at the cap and report it."""
     from md_migration_assessment.sources.databricks.connection import job_task_rows
 
     jobs = [{"job_id": i, "settings": {"tasks": [

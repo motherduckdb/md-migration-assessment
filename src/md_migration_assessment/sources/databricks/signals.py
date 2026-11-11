@@ -27,6 +27,7 @@ def _not_system(cat_col: str, name_col: str | None = None) -> str:
 
 
 def _tbl(name: str, category: str, source: str, predicate: str) -> Signal:
+    """Count tables that match the condition, skipping system catalogs and hidden tables."""
     return _neutral_probe(
         name, category, source, predicate, _TBL,
         exclude=_not_system("table_catalog", "table_name"),
@@ -34,6 +35,7 @@ def _tbl(name: str, category: str, source: str, predicate: str) -> Signal:
 
 
 def _plain(name: str, category: str, source: str, predicate: str, obj: str) -> Signal:
+    """Count rows that match the condition. Unlike _tbl, nothing is filtered out first."""
     return _neutral_probe(name, category, source, predicate, obj)
 
 

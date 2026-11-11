@@ -53,6 +53,7 @@ def bq(name: str) -> str:
 
 @dataclass(frozen=True)
 class DatabricksConfig:
+    """Workspace address and login details, read from the environment."""
     host: str
     http_path: str
     token: str | None = None
@@ -62,6 +63,7 @@ class DatabricksConfig:
 
     @classmethod
     def from_env(cls) -> "DatabricksConfig":
+        """Build the config from DATABRICKS_* variables. Fail if the host or warehouse is missing."""
         env = os.environ
         host = (env.get("DATABRICKS_HOST") or "").strip()
         if not host:
@@ -85,6 +87,7 @@ class DatabricksConfig:
 
     @property
     def auth_mode(self) -> str:
+        """Login method: "pat" token, "m2m" service principal, or "u2m" browser sign-in."""
         if self.token:
             return "pat"
         if self.client_id and self.client_secret:
@@ -92,6 +95,7 @@ class DatabricksConfig:
         return "u2m"
 
     def connect_kwargs(self) -> dict:
+        """Arguments for the SQL connector that match the login method."""
         kw: dict = {"server_hostname": self.host, "http_path": self.http_path}
         mode = self.auth_mode
         if mode == "pat":
@@ -115,6 +119,7 @@ class DatabricksConfig:
 
 
 def _as_list(value) -> list:
+    """Wrap one value in a list. None gives an empty list."""
     if value is None:
         return []
     if isinstance(value, (list, tuple)):
@@ -190,6 +195,7 @@ _EXT_LANGUAGE = {".py": "python", ".ipynb": "python", ".sql": "sql",
 #: Task-type keys of a Jobs API task, in the API's own naming, minus
 #: the "_task" suffix (notebook, spark_python, dbt, sql, ...).
 def _task_type(task: dict) -> str | None:
+    """Type of a Jobs API task, such as "notebook" or "sql", or None if it has none."""
     keys = sorted(k for k in task if k.endswith("_task") and task[k] is not None)
     return keys[0].removesuffix("_task") if keys else None
 
@@ -211,6 +217,7 @@ def _trigger_kind(settings: dict) -> tuple[str, bool]:
 
 
 def _language_from_path(path: str | None) -> str | None:
+    """Guess a notebook or file's language from its extension, or None."""
     if not path:
         return None
     lower = path.lower()
@@ -287,6 +294,7 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
 
 
 def job_tasks_table(rows: list[dict]) -> pa.Table:
+    """Arrow table of job task rows with fixed columns and types."""
     schema = pa.schema([
         (c, pa.bool_() if c in ("in_for_each", "trigger_paused") else pa.string())
         for c in JOB_TASK_COLUMNS
@@ -295,6 +303,7 @@ def job_tasks_table(rows: list[dict]) -> pa.Table:
 
 
 def details_table(rows: list[dict]) -> pa.Table:
+    """Arrow table of table detail rows with fixed columns and types."""
     schema = pa.schema([
         (c, pa.int64() if c in ("num_files", "size_in_bytes")
          else pa.bool_() if c in ("cdf_enabled", "dv_enabled")
@@ -305,6 +314,7 @@ def details_table(rows: list[dict]) -> pa.Table:
 
 
 def detail_targets_sql(limit: int) -> str:
+    """Query for the tables to describe. It asks for one more than the limit, so a cap can be detected."""
     excluded = ", ".join(f"'{c}'" for c in sorted(EXCLUDED_CATALOGS))
     types = ", ".join(f"'{t}'" for t in _DETAIL_TYPES)
     hidden = " AND ".join(f"table_name NOT LIKE '{p}%'" for p in HIDDEN_TABLE_PREFIXES)
@@ -324,6 +334,7 @@ class DatabricksSource:
 
     def __init__(self, conn, detail_max_tables: int = DEFAULT_DETAIL_MAX_TABLES,
                  deployment: str | None = None, cfg: DatabricksConfig | None = None) -> None:
+        """Wrap a connection. The config is only needed for Jobs API calls."""
         self._conn = conn
         self._detail_max_tables = detail_max_tables
         self._deployment = deployment
@@ -332,6 +343,7 @@ class DatabricksSource:
 
     @classmethod
     def open(cls, cfg: DatabricksConfig) -> "DatabricksSource":
+        """Open a SQL warehouse connection from the config."""
         try:
             from databricks import sql as dbsql  # deferred: an optional extra
         except ImportError as exc:  # pragma: no cover - environment-dependent
@@ -342,14 +354,17 @@ class DatabricksSource:
         return cls(dbsql.connect(**cfg.connect_kwargs()), cfg.detail_max_tables, cfg.host, cfg)
 
     def _fetch(self, sql: str) -> pa.Table:
+        """Run one statement and return its rows as an Arrow table."""
         with self._conn.cursor() as cur:
             cur.execute(sql)
             return cur.fetchall_arrow()
 
     def reader(self, sql: str) -> pa.RecordBatchReader | pa.Table:
+        """Run an extract query. The result comes back as one in-memory table."""
         return self._fetch(sql)
 
     def command(self, command: str) -> tuple[pa.Table, bool]:
+        """Run an extract that is not one SQL query. Returns the rows and whether a cap cut them short."""
         if command == HIVE_TABLES_COMMAND:
             return self._hive_tables()
         if command == JOB_TASKS_COMMAND:
@@ -398,6 +413,7 @@ class DatabricksSource:
             raise RuntimeError(f"{code}: {exc}") from exc
 
     def _job_tasks(self) -> tuple[pa.Table, bool]:
+        """Read jobs from the Jobs API and flatten their tasks. Stops at the cap and says so."""
         cap = self._detail_max_tables
         jobs: list[dict] = []
         token = None
@@ -413,6 +429,7 @@ class DatabricksSource:
         truncated = len(jobs) > cap or bool(token)
 
         def language(path: str) -> str | None:
+            """Notebook language from the workspace, or None."""
             return self._rest("/api/2.0/workspace/get-status", {"path": path}).get("language")
 
         rows, capped = job_task_rows(jobs[:cap], language, cap)
@@ -428,16 +445,19 @@ class DatabricksSource:
         )
 
     def _show_tables(self, schema: str) -> list[str]:
+        """Names of the non-temporary tables in one legacy Hive schema."""
         t = self._fetch(f"SHOW TABLES IN hive_metastore.{bq(schema)}")
         temp = t.column("isTemporary").to_pylist() if "isTemporary" in t.column_names else None
         names = t.column("tableName").to_pylist()
         return [n for i, n in enumerate(names) if n and not (temp and temp[i])]
 
     def list_databases(self) -> list[str]:
+        """Catalogs to walk, without the skipped system and sample ones."""
         names = self._fetch("SHOW CATALOGS").column(0).to_pylist()
         return [n for n in names if n and n.lower() not in EXCLUDED_CATALOGS]
 
     def session_info(self) -> SessionInfo:
+        """Workspace host, SQL version and cloud:region of the metastore."""
         row = self._fetch(
             "SELECT current_metastore() AS metastore, "
             "current_version().dbsql_version AS version"
@@ -450,10 +470,12 @@ class DatabricksSource:
         )
 
     def server_time(self) -> datetime:
+        """Databricks' own clock in UTC. Coverage windows are measured from it."""
         (us,) = self._fetch(
             "SELECT unix_micros(current_timestamp()) AS us"
         ).column(0).to_pylist()
         return datetime.fromtimestamp(us / 1_000_000, tz=timezone.utc)
 
     def close(self) -> None:
+        """Close the SQL connection."""
         self._conn.close()
