@@ -5,7 +5,7 @@
 import { useMemo } from 'react';
 import { useSQLQuery } from '@motherduck/react-sql-query';
 import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from 'recharts';
-import { N, S, formatBytes, formatInt, formatMs, symlog } from '../format';
+import { N, NN, S, formatBytes, formatInt, formatMs, intOrMissing, symlog } from '../format';
 import { MUTED, QUERY_CLASSES } from '../palette';
 import * as Q from '../queries';
 import type { Filters } from '../queries';
@@ -18,7 +18,7 @@ type Point = {
   n_queries: number;
   elapsed_ms: number;
   bytes_scanned: number;
-  n_spilled_remote: number;
+  n_spilled_remote: number | null;
   queued_ms: number;
   x: number;
   y: number;
@@ -42,7 +42,7 @@ export function WorkloadPanel({ filters, color }: { filters: Filters; color: (na
           n_queries: N(r.n_queries),
           elapsed_ms: ms,
           bytes_scanned: bytes,
-          n_spilled_remote: N(r.n_spilled_remote),
+          n_spilled_remote: NN(r.n_spilled_remote),
           queued_ms: N(r.queued_ms),
           x: symlog(bytes),
           y: symlog(ms),
@@ -93,7 +93,7 @@ export function WorkloadPanel({ filters, color }: { filters: Filters; color: (na
                               { name: 'bytes scanned', value: formatBytes(p.bytes_scanned) },
                               { name: 'elapsed (server-side)', value: formatMs(p.elapsed_ms) },
                               { name: 'queued overload', value: formatMs(p.queued_ms) },
-                              { name: 'spilled to remote', value: formatInt(p.n_spilled_remote) },
+                              { name: 'spilled to remote', value: intOrMissing(p.n_spilled_remote) },
                             ]}
                           />
                         );

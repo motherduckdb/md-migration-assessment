@@ -60,13 +60,18 @@ def _details_cols(con: duckdb.DuckDBPyConnection) -> tuple[str, str]:
         return (
             "CAST(NULL AS BIGINT) AS bytes, CAST(NULL AS BIGINT) AS num_files, "
             "CAST(NULL AS VARCHAR) AS uniform_formats, CAST(NULL AS VARCHAR) AS location, "
-            "CAST(NULL AS VARCHAR) AS detail_format",
+            "CAST(NULL AS VARCHAR) AS detail_format, CAST(NULL AS BOOLEAN) AS detail_ok",
             "",
         )
+    has_error = con.execute(
+        "SELECT count(*) FROM duckdb_columns() WHERE schema_name = 'raw' "
+        "AND table_name = 'table_details' AND column_name = 'detail_error'").fetchone()[0]
+    # A table with no detail row, or whose DESCRIBE DETAIL failed, was not looked at.
+    ok = "d.table_name IS NOT NULL" + (" AND d.detail_error IS NULL" if has_error else "")
     return (
         "d.size_in_bytes::BIGINT AS bytes, d.num_files::BIGINT AS num_files, "
         "d.uniform_formats AS uniform_formats, d.location AS location, "
-        "d.format AS detail_format",
+        f"d.format AS detail_format, ({ok}) AS detail_ok",
         "LEFT JOIN raw.table_details d ON d.collection_id = t.collection_id "
         "AND d.table_catalog = t.table_catalog AND d.table_schema = t.table_schema "
         "AND d.table_name = t.table_name",
@@ -94,7 +99,7 @@ def _build_sizing(con: duckdb.DuckDBPyConnection) -> None:
     cols, join = _details_cols(con)
     con.execute(f"""
         INSERT INTO report.sizing BY NAME
-        SELECT * EXCLUDE (uniform_formats, location, detail_format) FROM (
+        SELECT * EXCLUDE (uniform_formats, location, detail_format, detail_ok) FROM (
             SELECT t.collection_id AS collection_id,
                    t.table_catalog AS table_catalog, t.table_schema AS table_schema,
                    t.table_name AS table_name, t.table_type AS table_type,
@@ -145,7 +150,8 @@ def _build_readable_in_place(con: duckdb.DuckDBPyConnection) -> None:
                     WHEN fmt = 'DELTA' AND table_type LIKE 'EXTERNAL%' THEN 'delta_scan'
                     -- Without complete table details, a missing UniForm list means "not looked at", not "none".
                     WHEN fmt = 'DELTA' AND uniform_formats IS NULL
-                        AND details_extract_status <> 'complete' THEN 'unknown'
+                        AND (details_extract_status <> 'complete'
+                             OR NOT coalesce(detail_ok, FALSE)) THEN 'unknown'
                     WHEN fmt = 'DELTA' THEN 'enable_uniform_or_copy'
                     WHEN fmt IN ('PARQUET', 'CSV', 'JSON') THEN 'file_scan'
                     ELSE 'copy'

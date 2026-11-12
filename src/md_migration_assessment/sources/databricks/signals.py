@@ -34,9 +34,11 @@ def _tbl(name: str, category: str, source: str, predicate: str) -> Signal:
     )
 
 
-def _plain(name: str, category: str, source: str, predicate: str, obj: str) -> Signal:
-    """Count rows that match the condition. Unlike _tbl, nothing is filtered out first."""
-    return _neutral_probe(name, category, source, predicate, obj)
+def _plain(name: str, category: str, source: str, predicate: str, obj: str,
+           distinct: bool = False) -> Signal:
+    """Count rows that match the condition (or distinct objects, with ``distinct``).
+    Unlike _tbl, nothing is filtered out first."""
+    return _neutral_probe(name, category, source, predicate, obj, distinct=distinct)
 
 
 _TBL = "table_catalog || '.' || table_schema || '.' || table_name"
@@ -128,11 +130,11 @@ SIGNALS: list[Signal] = [
     _plain("continuous_pipelines", "platform", "pipelines",
            "delete_time IS NULL AND coalesce(continuous, false)", "pipeline_name"),
     _plain("model_serving_endpoints", "platform", "served_entities",
-           "endpoint_delete_time IS NULL", "endpoint_name"),
+           "endpoint_delete_time IS NULL", "endpoint_name", distinct=True),
     _plain("pipeline_or_job_written_tables", "platform", "table_lineage_rollup",
            "target_table_full_name IS NOT NULL AND entity_type IN ('JOB', 'PIPELINE') "
            "AND split_part(target_table_full_name, '.', 1) NOT IN " + _SYSTEM_CATALOGS,
-           "target_table_full_name || ' <- ' || entity_type"),
+           "target_table_full_name", distinct=True),
     _plain("table_lineage_edges", "platform", "table_lineage_rollup",
            "source_table_full_name IS NOT NULL AND target_table_full_name IS NOT NULL "
            "AND split_part(target_table_full_name, '.', 1) NOT IN " + _SYSTEM_CATALOGS,

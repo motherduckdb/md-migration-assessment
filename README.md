@@ -146,6 +146,10 @@ md-assess collect --source databricks --profile standard --history-days 30 --out
 md-assess report  --db assessment.duckdb
 ```
 
+A git install has no dashboard bundle (it is a build output), so `collect` and
+`report` work but `dashboard` and `publish` need `cd dive && npm run bundle` in
+a clone first.
+
 For unattended runs, use a service principal instead of browser sign-in: set
 `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (OAuth M2M). A personal
 access token (`DATABRICKS_TOKEN`) also works but ties the run to a person. To
@@ -154,12 +158,17 @@ run on MotherDuck compute instead of your machine, see
 
 Spend, queries and jobs cover only the workspace you connect to. To cover more,
 set `DATABRICKS_WORKSPACES` to `all` or to a comma-separated list of workspace
-IDs. The report lists the workspaces it covered.
+IDs. The report lists the workspaces it covered. An ID that matches no workspace
+stops the run.
 
 The collector sees only what its login is granted, so use a login that can see
 everything you want assessed. The grants it needs are listed in the Databricks
 Flight cookbook recipe. Any grant left out only marks that extractor `unavailable`; the rest
 of the collection still runs.
+
+Tables named `__materialization_*` or `event_log_*` are treated as hidden
+pipeline tables: they are counted as system tables and left out of the table
+signals. A user table with one of those prefixes is skipped the same way.
 
 ## Local dashboard
 

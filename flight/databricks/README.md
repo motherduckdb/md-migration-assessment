@@ -16,6 +16,10 @@ The Databricks adapter has no public release yet, so the Flight reads the newest
 wheel from that table, checks its sha256, and unpacks it. Once a release exists,
 pin it in `requirements.txt` and drop `load_collector()`.
 
+The Flight runs whatever wheel is newest in that table, so only the people who
+publish the collector should be able to write to it. Keep `md_assess_dist`
+unshared, or shared read-only.
+
 ## Setup
 
 1. Databricks: create a service principal and an OAuth secret. Give it Can use
@@ -39,6 +43,10 @@ pin it in `requirements.txt` and drop `load_collector()`.
 
 Optional settings are `SCOPE`, `DATABRICKS_WORKSPACES`, `SECRET_NAME`, `WHEEL_DB` and `WHEEL_VERSION`.
 
-Tested on 2026-11-06 against a synthetic Unity Catalog workspace: 34 of 35
-extractors completed. `hive_metastore_tables` is unavailable because that
+Tested on 2026-11-12 against a synthetic Unity Catalog workspace: of 37
+extractors, 35 completed, `job_tasks` was partial (two notebook language
+lookups failed), and `hive_metastore_tables` is unavailable because that
 workspace has Hive Metastore turned off.
+
+If the target database is shared with `UPDATE AUTOMATIC`, readers can see the
+old data for a while after a run, until the share updates.

@@ -195,9 +195,12 @@ def publish(collection: Path, database: str, dive_title: str, replace: bool) -> 
 def resolve_databricks_credentials(secret_name: str) -> None:
     """Check the Databricks settings are present and set the names md-assess reads."""
     # Copy each credential from the namespaced secret param onto the bare name
-    # md-assess reads, so a raw alias from another secret cannot win.
+    # md-assess reads, so a raw alias from another secret cannot win. The bare
+    # names are cleared first so a token from elsewhere can't sit beside the
+    # service principal.
     for param in CREDENTIAL_PARAMS:
         value = os.environ.get(f"{secret_name}_{param}")
+        os.environ.pop(param, None)
         if value:
             os.environ[param] = value
     host = os.environ.get("DATABRICKS_HOST", "").strip()
@@ -211,8 +214,10 @@ def resolve_databricks_credentials(secret_name: str) -> None:
         raise ValueError(f"no Databricks credential: add DATABRICKS_CLIENT_ID and "
                          f"DATABRICKS_CLIENT_SECRET (or DATABRICKS_TOKEN) to the "
                          f"{secret_name!r} Flights secret")
-    print(f"auth: {'service principal (OAuth M2M)' if m2m else 'personal access token'} "
-          f"against {host}")
+    # md-assess uses the token when there is one, so say so.
+    mode = "personal access token" if os.environ.get("DATABRICKS_TOKEN") else \
+        "service principal (OAuth M2M)"
+    print(f"auth: {mode} against {host}")
 
 
 def env(name: str, default: str) -> str:

@@ -1,7 +1,8 @@
 -- md-assess-extract: clusters
 -- Classic (all-purpose and job) clusters from system.compute.clusters: the
 -- latest config row per cluster. Owner, tags and init scripts are not
--- collected; node types and worker counts size the Spark estate.
+-- collected; node types and worker counts size the Spark estate. Deleted
+-- clusters (every finished job cluster) are left out.
 SELECT
     cluster_id AS cluster_id,
     cluster_name AS cluster_name,
@@ -16,6 +17,10 @@ SELECT
     data_security_mode AS data_security_mode,
     create_time AS create_time,
     delete_time AS delete_time
-FROM system.compute.clusters
-WHERE true {workspace_filter}
-QUALIFY row_number() OVER (PARTITION BY workspace_id, cluster_id ORDER BY change_time DESC) = 1
+FROM (
+    SELECT *
+    FROM system.compute.clusters
+    WHERE true {workspace_filter}
+    QUALIFY row_number() OVER (PARTITION BY workspace_id, cluster_id ORDER BY change_time DESC) = 1
+) latest
+WHERE delete_time IS NULL

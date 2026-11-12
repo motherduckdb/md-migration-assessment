@@ -4,7 +4,7 @@
 import { useMemo } from 'react';
 import { useSQLQuery } from '@motherduck/react-sql-query';
 import { Bar, BarChart, CartesianGrid, Cell, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { N, S, formatBytes, formatInt, formatMs, pivot } from '../format';
+import { N, NN, S, formatBytes, formatInt, formatMs, intOrMissing, pivot } from '../format';
 import { CONFIDENCE, LOAD_METHOD, MUTED } from '../palette';
 import * as Q from '../queries';
 import type { Filters } from '../queries';
@@ -17,8 +17,8 @@ function Ingestion({ filters }: { filters: Filters }) {
       name: S(r.name),
       load_method: S(r.load_method),
       bytes_loaded: N(r.bytes_loaded),
-      files: N(r.files),
-      rows_loaded: N(r.rows_loaded),
+      files: NN(r.files),
+      rows_loaded: NN(r.rows_loaded),
       tables: N(r.tables),
     }));
     const methods = [...new Set(long.map((r) => r.load_method))].sort();
@@ -27,10 +27,12 @@ function Ingestion({ filters }: { filters: Filters }) {
     const rows = pivot(long, 'name', 'load_method', byBytes ? 'bytes_loaded' : 'tables').sort(
       (a, b) => methods.reduce((s, m) => s + N(b[m]), 0) - methods.reduce((s, m) => s + N(a[m]), 0),
     );
-    const detail = new Map<string, { files: number; rows_loaded: number; tables: number }>();
+    // NULL + NULL stays NULL ("not collected"); a number plus NULL keeps the number.
+    const add = (a: number | null, b: number | null) => (a == null && b == null ? null : N(a) + N(b));
+    const detail = new Map<string, { files: number | null; rows_loaded: number | null; tables: number }>();
     for (const r of long) {
-      const d = detail.get(r.name) ?? { files: 0, rows_loaded: 0, tables: 0 };
-      detail.set(r.name, { files: d.files + r.files, rows_loaded: d.rows_loaded + r.rows_loaded, tables: d.tables + r.tables });
+      const d = detail.get(r.name) ?? { files: null, rows_loaded: null, tables: 0 };
+      detail.set(r.name, { files: add(d.files, r.files), rows_loaded: add(d.rows_loaded, r.rows_loaded), tables: d.tables + r.tables });
     }
     return { rows, methods, detail, byBytes };
   }, [query.data]);
@@ -53,7 +55,7 @@ function Ingestion({ filters }: { filters: Filters }) {
                 title={String(label)}
                 rows={[
                   ...payload.filter((p) => N(p.value) > 0).map((p) => ({ color: String(p.color), name: String(p.name), value: byBytes ? formatBytes(p.value) : `${formatInt(p.value)} tables` })),
-                  ...(d ? [{ name: 'tables', value: formatInt(d.tables) }, { name: 'files', value: formatInt(d.files) }, { name: 'rows loaded', value: formatInt(d.rows_loaded) }] : []),
+                  ...(d ? [{ name: 'tables', value: formatInt(d.tables) }, { name: 'files', value: intOrMissing(d.files) }, { name: 'rows loaded', value: intOrMissing(d.rows_loaded) }] : []),
                 ]}
               />
             );

@@ -311,6 +311,19 @@ def test_uniform_is_unknown_when_table_details_are_incomplete(out_db):
     assert row == ("unknown", "UniForm unknown: table_details not complete")
 
 
+def test_uniform_is_unknown_when_one_table_detail_failed(out_db):
+    """Details complete overall, but this table's DESCRIBE DETAIL failed or is missing: "unknown"."""
+    run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    out_db.execute("UPDATE raw.table_details SET detail_error = 'PERMISSION_DENIED', "
+                   "uniform_formats = NULL WHERE table_name = 'customers'")
+    build_report(out_db)
+    paths = dict(out_db.execute(
+        "SELECT table_name, read_path FROM report.readable_in_place "
+        "WHERE table_catalog = 'assess_lab' AND table_schema = 'core'").fetchall())
+    assert paths["customers"] == "unknown"
+    assert "enable_uniform_or_copy" in paths.values() or "uc_iceberg_rest" in paths.values()
+
+
 def test_serverless_compute_has_one_name_in_spend_and_workload(out_db):
     """Serverless jobs and notebooks get the same name in spend and workload, so one filter matches both."""
     run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
@@ -765,3 +778,35 @@ def test_workspace_names_are_disclosed_as_object_names(out_db):
     disclosed, unclassified = classify_aggregate_columns(
         "report.collection_warnings", ["warning", "detail", "workspaces"])
     assert unclassified == [] and "workspaces" in disclosed["object_name"]
+
+
+def test_tasks_with_a_warehouse_are_not_called_serverless():
+    """A task that names a SQL warehouse runs there, whatever its type."""
+    from md_migration_assessment.sources.databricks.connection import job_task_rows
+
+    jobs = [{"job_id": 1, "settings": {"tasks": [
+        {"notebook_task": {"notebook_path": "/nb.py", "warehouse_id": "w1"}},
+        {"dashboard_task": {"dashboard_id": "d", "warehouse_id": "w1"}},
+        {"notebook_task": {"notebook_path": "/nb2.py"}}]}}]
+    rows, _ = job_task_rows(jobs, lambda p: "PYTHON", 5)
+    assert [r["compute_kind"] for r in rows] == ["sql_warehouse", "sql_warehouse", "serverless"]
+
+
+def test_object_signals_count_objects_not_rows():
+    """An endpoint serving two models is one endpoint; a table fed from two sources is one table."""
+    import duckdb
+
+    from md_migration_assessment.sources.databricks.signals import SIGNALS
+
+    con = duckdb.connect()
+    con.execute("CREATE SCHEMA raw")
+    con.execute("CREATE TABLE raw.served_entities AS SELECT * FROM (VALUES "
+                "('c', 'ep1', NULL), ('c', 'ep1', NULL), ('c', 'ep2', NULL)) "
+                "v(collection_id, endpoint_name, endpoint_delete_time)")
+    con.execute("CREATE TABLE raw.table_lineage_rollup AS SELECT * FROM (VALUES "
+                "('c', 'a.b.src1', 'a.b.t', 'JOB'), ('c', 'a.b.src2', 'a.b.t', 'JOB')) "
+                "v(collection_id, source_table_full_name, target_table_full_name, entity_type)")
+    by_name = {s.name: s for s in SIGNALS}
+    n = {k: con.execute(by_name[k].sql.format(cid="c")).fetchone()[0]
+         for k in ("model_serving_endpoints", "pipeline_or_job_written_tables")}
+    assert n == {"model_serving_endpoints": 2, "pipeline_or_job_written_tables": 1}

@@ -99,6 +99,11 @@ def render_workspace_filter(sql: str, workspace_ids: tuple[str, ...] | None) -> 
     return _WORKSPACE_FILTER_RE.sub(sub, sql)
 
 
+def _safe_error(exc: Exception) -> str:
+    """The error text without the SDK's "Config: ..." dump, which names the client ID."""
+    return str(exc).split(". Config:")[0].split(" Config:")[0]
+
+
 def bq(name: str) -> str:
     """Backtick-quote a Unity Catalog identifier."""
     return "`" + name.replace("`", "``") + "`"
@@ -175,10 +180,13 @@ class DatabricksConfig:
                 raise ImportError(
                     "OAuth M2M needs databricks-sdk: pip install databricks-sdk"
                 ) from exc
+            # auth_type pins the method: without it the SDK also reads any
+            # DATABRICKS_TOKEN in the environment and refuses two methods.
             cfg = Config(
                 host=f"https://{self.host}",
                 client_id=self.client_id,
                 client_secret=self.client_secret,
+                auth_type="oauth-m2m",
             )
             kw["credentials_provider"] = lambda: oauth_service_principal(cfg)
         elif sdk_config is not None:
@@ -360,7 +368,8 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
             elif task.get("new_cluster") or task.get("job_cluster_key"):
                 nc = task.get("new_cluster") or clusters.get(task.get("job_cluster_key"), {})
                 compute, spark = "job_cluster", nc.get("spark_version")
-            elif ttype == "sql":
+            elif ttype == "sql" or body.get("warehouse_id") or task.get("warehouse_id"):
+                # dbt, dashboard, alert and Power BI tasks also run on a warehouse
                 compute, spark = "sql_warehouse", None
             elif ttype == "pipeline":
                 compute, spark = "pipeline", None
@@ -497,12 +506,34 @@ class DatabricksSource:
                 except Exception as exc:  # noqa: BLE001 - re-raised with advice
                     self._workspace_error = RuntimeError(
                         "could not find this workspace's ID; set DATABRICKS_WORKSPACES "
-                        f"to the workspace ID, or to 'all': {exc}"
+                        f"to the workspace ID, or to 'all': {_safe_error(exc)}"
                     )
                     raise self._workspace_error from exc
             else:
                 self._workspace_ids = tuple(choice)
+                self._check_workspace_ids(self._workspace_ids)
         return self._workspace_ids
+
+    def _check_workspace_ids(self, ids: tuple[str, ...]) -> None:
+        """Fail if DATABRICKS_WORKSPACES names an ID that matches no workspace.
+
+        Otherwise a typo gives an assessment that looks complete but is empty.
+        If the workspace list can't be read, or is empty, the IDs are used as given."""
+        try:
+            found = self._fetch(
+                "SELECT DISTINCT workspace_id FROM system.access.workspaces_latest"
+            ).column(0).to_pylist()
+        except Exception:  # noqa: BLE001 - can't check: use the IDs as given
+            return
+        if not found:
+            return
+        missing = sorted(set(ids) - {str(f) for f in found})
+        if missing:
+            self._workspace_error = RuntimeError(
+                "DATABRICKS_WORKSPACES lists workspace ID(s) that match no workspace: "
+                + ", ".join(missing)
+            )
+            raise self._workspace_error
 
     def command(self, command: str) -> tuple[pa.Table, bool]:
         """Run an extract that is not one SQL query. Returns the rows and whether a cap cut them short."""
@@ -536,10 +567,13 @@ class DatabricksSource:
 
             cfg = self._cfg
             kw: dict = {"host": f"https://{cfg.host}"}
+            # auth_type makes the SDK use the method auth_mode chose, even when
+            # the environment also holds credentials for another method.
             if cfg.auth_mode == "pat":
-                kw["token"] = cfg.token
+                kw.update(token=cfg.token, auth_type="pat")
             elif cfg.auth_mode == "m2m":
-                kw.update(client_id=cfg.client_id, client_secret=cfg.client_secret)
+                kw.update(client_id=cfg.client_id, client_secret=cfg.client_secret,
+                          auth_type="oauth-m2m")
             else:
                 if self._sdk_config is None:
                     self._sdk_config = cfg.u2m_sdk_config()

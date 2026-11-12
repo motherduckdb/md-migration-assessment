@@ -302,3 +302,47 @@ def test_jobs_without_has_more_make_no_extra_calls():
     src = _Rest(handler)
     table, partial = src.command(JOB_TASKS_COMMAND)
     assert partial is False and table.num_rows == 3 and len(src.calls) == 1
+
+
+# Review round 2: auth method pinned, workspace IDs checked -------------------
+
+
+def test_rest_client_pins_the_auth_method(monkeypatch):
+    """PAT and M2M tell the SDK which method to use, so a stray env credential can't clash."""
+    import databricks.sdk as sdk
+
+    clients = []
+    monkeypatch.setattr(sdk, "WorkspaceClient", lambda **kw: clients.append(kw) or type("W", (), {"api_client": None})())
+    for cfg in (DatabricksConfig(host="h", http_path="/p", token="dapi-x"),
+                DatabricksConfig(host="h", http_path="/p", client_id="i", client_secret="s")):
+        DatabricksSource(_Conn(lambda s: []), cfg=cfg)._rest_client()
+    assert [c["auth_type"] for c in clients] == ["pat", "oauth-m2m"]
+
+
+def test_workspace_error_does_not_show_the_client_id(monkeypatch):
+    """The SDK's error ends with a Config dump naming the client ID; it is cut off."""
+    cfg = DatabricksConfig(host="h", http_path="/p", client_id="my-client-id", client_secret="s")
+    src = DatabricksSource(_Conn(lambda s: []), cfg=cfg)
+
+    def boom():
+        raise ValueError("default auth: cannot configure. Config: host=h, client_id=my-client-id")
+
+    monkeypatch.setattr(src, "_rest_client", boom)
+    with pytest.raises(RuntimeError) as exc:
+        src.workspace_ids()
+    assert "my-client-id" not in str(exc.value) and "cannot configure" in str(exc.value)
+
+
+def _ws_source(ids, listed):
+    cfg = DatabricksConfig(host="h", http_path="/p", token="t", workspaces=tuple(ids))
+    rows = [{"workspace_id": w} for w in listed]
+    return DatabricksSource(_Conn(lambda s: rows if "workspaces_latest" in s else []), cfg=cfg)
+
+
+def test_unknown_workspace_ids_fail_clearly():
+    """A typo in DATABRICKS_WORKSPACES stops the run instead of giving an empty assessment."""
+    assert _ws_source(["111"], ["111", "222"]).workspace_ids() == ("111",)
+    with pytest.raises(RuntimeError, match="333"):
+        _ws_source(["111", "333"], ["111", "222"]).workspace_ids()
+    # an empty or unreadable workspace list can't be checked: the IDs are used as given
+    assert _ws_source(["333"], []).workspace_ids() == ("333",)

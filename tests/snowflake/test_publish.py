@@ -201,7 +201,9 @@ def _target(tmp_path: Path, attach_as: str) -> duckdb.DuckDBPyConnection:
                 'CREATE TABLE "{d}".report.gone AS SELECT 0 AS v',
                 'CREATE TABLE "{d}".old.t AS SELECT 0 AS v',
                 'CREATE TABLE "{d}".kept.t AS SELECT 0 AS v',
-                'CREATE VIEW "{d}".kept.v AS SELECT 1 AS x'):
+                'CREATE VIEW "{d}".kept.v AS SELECT 1 AS x',
+                'CREATE SCHEMA "{d}".macros', 'CREATE TABLE "{d}".macros.t AS SELECT 0 AS v',
+                'CREATE MACRO "{d}".macros.m(x) AS x + 1'):
         con.execute(sql.format(d=attach_as))
     return con
 
@@ -219,6 +221,8 @@ def test_replace_in_place_drops_stale_tables_whatever_the_name_case(tmp_path):
     schemas = {r[0] for r in con.execute(
         "SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'md_assessment_x'").fetchall()}
     assert "old" not in schemas and "kept" in schemas
+    # a schema with a macro in it is kept too, instead of failing the replace
+    assert "macros" in schemas
     assert con.execute("SELECT x FROM md_assessment_x.kept.v").fetchone() == (1,)
 
 

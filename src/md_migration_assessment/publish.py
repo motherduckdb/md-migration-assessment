@@ -166,12 +166,19 @@ def _replace_in_place(con: Connection, database: str, handoff: Path, *, log: lis
         existing_sql = f"SELECT schema_name, table_name FROM duckdb_tables() WHERE {in_db}"
         log.append(existing_sql)
         existing = con.execute(existing_sql).fetchall() or []
-        views_sql = f"SELECT DISTINCT schema_name FROM duckdb_views() WHERE {in_db} AND NOT internal"
+        # Schemas holding anything besides tables (views, macros, sequences,
+        # types) are kept: DROP SCHEMA would fail on them and sink the replace.
+        views_sql = (
+            f"SELECT schema_name FROM duckdb_views() WHERE {in_db} AND NOT internal "
+            f"UNION SELECT schema_name FROM duckdb_functions() WHERE {in_db} AND NOT internal "
+            f"UNION SELECT schema_name FROM duckdb_sequences() WHERE {in_db} "
+            f"UNION SELECT schema_name FROM duckdb_types() WHERE {in_db} AND NOT internal"
+        )
         log.append(views_sql)
         schemas_with_views = {r[0].lower() for r in (con.execute(views_sql).fetchall() or [])}
         stale = [(s, t) for s, t in existing if (s.lower(), t.lower()) not in wanted]
         # A schema the handoff no longer has is dropped once its tables are,
-        # unless something else (a view) still lives in it.
+        # unless something else still lives in it.
         empty_schemas = sorted({s for s, _ in stale
                                 if s.lower() not in wanted_schemas
                                 and s.lower() not in schemas_with_views
