@@ -11,4 +11,5 @@ SELECT
     sum(usage_quantity) AS usage_quantity
 FROM system.storage.predictive_optimization_operations_history
 WHERE start_time >= current_timestamp() - INTERVAL {window_days} DAYS
+{workspace_filter}
 GROUP BY 1, 2, 3

@@ -31,6 +31,8 @@ _UNAVAILABLE_RE = re.compile(
 @dataclass(frozen=True)
 class SnowflakeAdapter:
     name: str = "snowflake"
+    display_name: str = "Snowflake"
+    deployment_noun: str = "Snowflake account"
     raw_schema_version: int = RAW_SCHEMA_VERSION
     extractors: list = field(default_factory=lambda: EXTRACTORS)
     # Snowflake upper-cases unquoted identifiers and quotes with "..."

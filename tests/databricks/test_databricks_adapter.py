@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import duckdb
 import pyarrow as pa
@@ -73,6 +74,55 @@ def test_every_extractor_sql_resource_loads_and_has_scope_hook():
                 sql = load_sql_path(s.sql)
                 if ex.scope_columns:
                     assert "{scope_filter}" in sql, s.sql
+
+
+def _extract_text(ex) -> str:
+    """Everything an extractor can produce columns from: its SQL files and command column lists."""
+    parts = []
+    for s in ex.sources:
+        if hasattr(s, "sql"):
+            parts.append(load_sql_path(s.sql))
+        if hasattr(s, "expected_columns"):
+            parts.append(" ".join(s.expected_columns))
+    return "\n".join(parts).lower()
+
+
+@pytest.mark.parametrize("ex", ADAPTER.extractors, ids=lambda e: e.name)
+def test_sensitive_fields_reference_real_columns(ex):
+    """Every column a privacy class is declared for appears in the extract, so a typo can't leave one unclassified."""
+    text = _extract_text(ex)
+    for column in ex.sensitive_fields:
+        assert re.search(rf"\b{re.escape(column.lower())}\b", text), (
+            f"{ex.name}: sensitive field {column!r} not in its SQL or command columns"
+        )
+
+
+@pytest.mark.parametrize("ex", ADAPTER.extractors, ids=lambda e: e.name)
+def test_scope_columns_reference_real_columns(ex):
+    """Every --scope column appears in the extract."""
+    text = _extract_text(ex)
+    for column in ex.scope_columns.values():
+        assert re.search(rf"\b{re.escape(column.lower())}\b", text), f"{ex.name}: {column}"
+
+
+def test_lineage_scope_keeps_out_of_scope_names_out():
+    """With --scope, lineage keeps an edge only when every table it names is in scope."""
+    from md_migration_assessment.collect.runner import _render
+    sql = load_sql_path("system/table_lineage_rollup.sql")
+    scoped = _render(sql, scope_pred="", window_days=30, scope=Scope.parse(["sales"], ADAPTER.scope))
+    assert "{scope_match" not in scoped
+    assert "(source_table_full_name IS NULL OR (source_table_catalog IN ('sales')))" in scoped
+    assert "(target_table_full_name IS NULL OR (target_table_catalog IN ('sales')))" in scoped
+    unscoped = _render(sql, scope_pred="", window_days=30)
+    assert "(source_table_full_name IS NULL OR TRUE)" in unscoped
+
+
+def test_publish_title_names_databricks():
+    """A Databricks publish without --title gets a Databricks title, not the Snowflake one."""
+    from md_migration_assessment.publish import TITLE_TEMPLATE
+    assert ADAPTER.display_name == "Databricks"
+    assert TITLE_TEMPLATE.format(source=ADAPTER.display_name).startswith("Databricks → MotherDuck")
+    assert ADAPTER.deployment_noun == "Databricks workspace"
 
 
 def test_storage_credentials_never_selects_the_secret():
@@ -181,6 +231,8 @@ def test_scope_filters_sql_and_command_output(out_db):
         "SELECT table_catalog || '.' || table_schema FROM raw.table_details").fetchall()}
     assert details == {"assess_lab.core"}
     assert "filtered client-side" in st["table_details"]["detail"]
+    # the detail query is limited by scope before its cap, not only after
+    assert "assess_lab" in conn.scope_predicate
     # the out-of-scope catalog is never walked
     assert not any("`workspace`" in q for q in conn.queries)
 
@@ -241,6 +293,32 @@ def test_readable_in_place_paths(out_db):
         "SELECT DISTINCT storage_scheme FROM report.readable_in_place "
         "WHERE storage_scheme IS NOT NULL").fetchall()}
     assert schemes == {"s3"}
+
+
+def test_uniform_is_unknown_when_table_details_are_incomplete(out_db):
+    """A managed Delta table that was never described is "unknown", not "without UniForm"."""
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.LITE)
+    cid = str(coll.collection_id)
+    # as if the detail cap stopped before this table
+    out_db.execute("UPDATE meta.extract_runs SET status = 'partial' "
+                   "WHERE collection_id = ? AND extractor = 'table_details'", [cid])
+    out_db.execute("DELETE FROM raw.table_details WHERE table_name = 'customers'")
+    build_report(out_db)
+    row = out_db.execute(
+        "SELECT read_path, note FROM report.readable_in_place "
+        "WHERE table_catalog = 'assess_lab' AND table_schema = 'core' AND table_name = 'customers'"
+    ).fetchone()
+    assert row == ("unknown", "UniForm unknown: table_details not complete")
+
+
+def test_serverless_compute_has_one_name_in_spend_and_workload(out_db):
+    """Serverless jobs and notebooks get the same name in spend and workload, so one filter matches both."""
+    run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
+    build_report(out_db)
+    spend = {r[0] for r in out_db.execute("SELECT DISTINCT warehouse_name FROM report.spend_profile").fetchall()}
+    work = {r[0] for r in out_db.execute("SELECT DISTINCT warehouse_name FROM report.workload_rollup").fetchall()}
+    assert "serverless compute" in spend & work
+    assert "SERVERLESS_COMPUTE" not in work and "jobs" not in spend
 
 
 def test_sizing_joins_details_and_flags_system_furniture(out_db):
@@ -378,7 +456,7 @@ def test_source_command_caps_and_isolates_per_table_errors():
 def test_detail_targets_skip_views_and_hidden_tables():
     """The table list for DESCRIBE DETAIL leaves out views, hidden tables and system catalogs."""
     sql = detail_targets_sql(10)
-    assert "'VIEW'" not in sql and "__materialization_" in sql and "'samples'" in sql
+    assert "'VIEW'" not in sql and "!_!_materialization!_" in sql and "'samples'" in sql
 
 
 # ── v2: workload, warnings, handoff classification ──────────────────────
@@ -493,6 +571,62 @@ def test_standard_builds_dive_report_tables_and_system_signals(out_db):
     assert feats["delta_sharing_recipients"] == "unknown"
 
 
+def test_dbu_usage_counts_only_dbus(out_db):
+    """Storage billed in GB-months is not added to the DBU total."""
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
+    cid = str(coll.collection_id)
+    dbus = out_db.execute(
+        "SELECT round(sum(usage_quantity))::BIGINT FROM raw.billing_usage_daily "
+        "WHERE collection_id = ? AND upper(coalesce(usage_unit, 'DBU')) = 'DBU'", [cid]).fetchone()[0]
+    # a large storage row that must not move the DBU count
+    out_db.execute(
+        "INSERT INTO raw.billing_usage_daily BY NAME SELECT * REPLACE "
+        "('GB_MONTH' AS usage_unit, 'DEFAULT_STORAGE' AS billing_origin_product, 1e6 AS usage_quantity) "
+        "FROM raw.billing_usage_daily WHERE collection_id = ? LIMIT 1", [cid])
+    build_report(out_db)
+    status, n, sample = features(out_db, coll)["dbu_usage"]
+    assert (status, n) == ("observed", dbus)
+    assert "DEFAULT_STORAGE" not in (sample or [])
+
+
+def test_scoped_lineage_keeps_out_of_scope_tables_out(out_db):
+    """With --scope lab.marts, the edge from lab.core is dropped, so its name never lands in raw."""
+    scope = Scope.parse(["lab.marts"], ADAPTER.scope)
+    coll = run_collection(out_db, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD, scope=scope)
+    assert runs(out_db, coll)["table_lineage_rollup"]["status"] == "complete"
+    rows = out_db.execute("SELECT * FROM raw.table_lineage_rollup").fetchall()
+    assert rows and not any("core" in str(r) for r in rows)
+
+
+def test_concurrency_carries_a_long_query_into_the_next_hour(out_db):
+    """A query running from 10:30 to 12:30 counts toward the 11:00 and 12:00 peaks."""
+    conn = FakeDatabricks()
+    conn.db.execute(
+        "INSERT INTO query_history (compute, statement_type, execution_status, start_time, end_time, "
+        "from_result_cache, total_duration_ms, statement_text, executed_by) VALUES "
+        "({'type': 'WAREHOUSE', 'warehouse_id': 'wh2'}, 'SELECT', 'FINISHED', "
+        "TIMESTAMP '2029-12-30 10:30', TIMESTAMP '2029-12-30 12:30', false, 7200000, 'long', 'seed@example.com')")
+    run_collection(out_db, ADAPTER, conn, profile=Profile.STANDARD)
+    peaks = dict(out_db.execute(
+        "SELECT hour(hour_start), peak_concurrent_queries FROM raw.query_concurrency "
+        "WHERE warehouse_id = 'wh2'").fetchall())
+    assert peaks == {10: 1, 11: 1, 12: 1}
+
+
+def test_handoff_keeps_every_databricks_output_column(out_db, tmp_path):
+    """Each extract's real output columns match its parsed projection, so publish drops nothing."""
+    from md_migration_assessment.db import open_output
+    from md_migration_assessment.handoff import build_handoff
+    src = tmp_path / "private.duckdb"
+    con = open_output(str(src))
+    run_collection(con, ADAPTER, FakeDatabricks(), profile=Profile.STANDARD)
+    build_report(con)
+    con.close()
+    manifest = build_handoff(str(src), str(tmp_path / "handoff.duckdb"))
+    dropped = {t: v["dropped_unexpected"] for t, v in manifest["tables"].items() if v["dropped_unexpected"]}
+    assert dropped == {}
+
+
 # ── job definitions (Jobs API) ───────────────────────────────────────────
 
 
@@ -548,3 +682,74 @@ def test_job_task_rows_cap_notebook_lookups():
     rows, capped = job_task_rows(jobs, lambda p: calls.append(p) or "PYTHON", 2)
     assert capped is True and len(calls) == 2
     assert [r["file_language"] for r in rows] == ["python", "python", None]
+
+
+# ── workspace scope ──────────────────────────────────────────────────────
+
+from md_migration_assessment.sources.databricks.connection import (  # noqa: E402
+    parse_workspaces,
+    render_workspace_filter,
+)
+
+
+@pytest.mark.parametrize("value, expected", [
+    (None, "current"), ("", "current"), (" current ", "current"), ("ALL", "all"),
+    ("123, 456", ("123", "456")),
+])
+def test_parse_workspaces(value, expected):
+    """DATABRICKS_WORKSPACES is 'current' (default), 'all', or a list of workspace IDs."""
+    assert parse_workspaces(value) == expected
+
+
+def test_parse_workspaces_rejects_names():
+    """Anything other than numeric IDs is refused, so it can never reach the SQL."""
+    with pytest.raises(ValueError):
+        parse_workspaces("prod; DROP TABLE x")
+
+
+def test_render_workspace_filter():
+    """The placeholder becomes an IN list, with an optional table alias, or nothing for all."""
+    sql = "WHERE a {workspace_filter} AND b {workspace_filter:u}"
+    assert render_workspace_filter(sql, ("1", "2")) == (
+        "WHERE a AND (workspace_id IN ('1', '2') OR workspace_id IS NULL) "
+        "AND b AND (u.workspace_id IN ('1', '2') OR u.workspace_id IS NULL)")
+    assert render_workspace_filter(sql, None) == "WHERE a  AND b "
+
+
+def test_every_system_extract_takes_the_workspace_filter():
+    """Each system-table extract is limited to the chosen workspaces."""
+    for ex in ADAPTER.extractors:
+        for s in ex.sources:
+            if hasattr(s, "sql") and "/system/" in str(s.sql):
+                assert "{workspace_filter" in load_sql_path(s.sql), s.sql
+
+
+def _spend_and_jobs(con):
+    spend = con.execute("SELECT sum(usage_quantity) FROM raw.billing_usage_daily").fetchone()[0]
+    jobs = con.execute("SELECT count(*) FROM raw.jobs").fetchone()[0]
+    return spend, jobs
+
+
+def test_workspace_filter_keeps_other_workspaces_out(tmp_path):
+    """With one workspace chosen, spend and jobs from a second workspace are left out."""
+    one = open_output(str(tmp_path / "one.duckdb"))
+    run_collection(one, ADAPTER, FakeDatabricks(second_workspace=True, workspace_ids=("1",)),
+                   profile=Profile.STANDARD)
+    every = open_output(str(tmp_path / "all.duckdb"))
+    run_collection(every, ADAPTER, FakeDatabricks(second_workspace=True, workspace_ids=None),
+                   profile=Profile.STANDARD)
+    spend_one, jobs_one = _spend_and_jobs(one)
+    spend_all, jobs_all = _spend_and_jobs(every)
+    assert spend_all - spend_one == pytest.approx(100.0)
+    assert jobs_all - jobs_one == 1
+    assert [r[0] for r in one.execute("SELECT workspace_id FROM raw.workspaces").fetchall()] == ["1"]
+
+
+def test_report_says_which_workspaces_it_covers(out_db):
+    """The report has a warning row naming the workspaces covered."""
+    run_collection(out_db, ADAPTER, FakeDatabricks(workspace_ids=("1",)), profile=Profile.STANDARD)
+    build_report(out_db)
+    rows = out_db.execute(
+        "SELECT detail FROM report.collection_warnings WHERE warning = 'workspace_scope'"
+    ).fetchall()
+    assert len(rows) == 1 and "lab (1)" in rows[0][0]

@@ -22,6 +22,7 @@ from md_migration_assessment.sources.databricks.connection import (
     hive_tables_table,
     job_task_rows,
     job_tasks_table,
+    render_workspace_filter,
 )
 from md_migration_assessment.sources.databricks.manifest import (
     HIVE_TABLES_COMMAND,
@@ -287,6 +288,15 @@ INSERT INTO access_table_lineage VALUES
   ('lab.core.orders', 'TABLE', 'lab.marts.revenue', 'TABLE', 'JOB', DATE '2029-12-31', NULL, 'seed@example.com'),
   ('lab.marts.revenue', 'TABLE', NULL, NULL, 'DBSQL_QUERY', DATE '2029-12-31', NULL, 'seed@example.com'),
   (NULL, 'PATH', NULL, NULL, 'NOTEBOOK', DATE '2029-12-31', 's3://bucket/x', 'seed@example.com');
+ALTER TABLE access_table_lineage ADD COLUMN source_table_catalog VARCHAR;
+ALTER TABLE access_table_lineage ADD COLUMN source_table_schema VARCHAR;
+ALTER TABLE access_table_lineage ADD COLUMN target_table_catalog VARCHAR;
+ALTER TABLE access_table_lineage ADD COLUMN target_table_schema VARCHAR;
+UPDATE access_table_lineage SET
+  source_table_catalog = split_part(source_table_full_name, '.', 1),
+  source_table_schema = split_part(source_table_full_name, '.', 2),
+  target_table_catalog = split_part(target_table_full_name, '.', 1),
+  target_table_schema = split_part(target_table_full_name, '.', 2);
 CREATE TABLE billing_usage (usage_date DATE, billing_origin_product VARCHAR, sku_name VARCHAR,
     usage_unit VARCHAR, usage_type VARCHAR, cloud VARCHAR, usage_end_time TIMESTAMP,
     usage_quantity DECIMAL(18, 6), usage_metadata STRUCT(warehouse_id VARCHAR, job_id VARCHAR),
@@ -319,6 +329,36 @@ CREATE TABLE table_privileges (grantee VARCHAR, privilege_type VARCHAR);
 INSERT INTO table_privileges VALUES ('analysts', 'SELECT'), ('analysts', 'SELECT'), ('engineers', 'MODIFY');
 CREATE TABLE routine_privileges (grantee VARCHAR, privilege_type VARCHAR);
 CREATE TABLE volume_privileges (grantee VARCHAR, privilege_type VARCHAR);
+CREATE TABLE access_workspaces_latest (workspace_id VARCHAR, workspace_name VARCHAR,
+    workspace_url VARCHAR, status VARCHAR);
+INSERT INTO access_workspaces_latest VALUES
+  ('1', 'lab', 'https://lab.cloud.databricks.com', 'RUNNING'),
+  ('2', 'other', 'https://other.cloud.databricks.com', 'RUNNING');
+"""
+
+#: Every system table carries the workspace it belongs to. The seed rows are
+#: all in workspace '1'; WORKSPACE_TWO_DDL adds rows in workspace '2'.
+WORKSPACE_DDL = "\n".join(
+    f"ALTER TABLE {t} ADD COLUMN workspace_id VARCHAR DEFAULT '1';"
+    for t in ("query_history", "compute_warehouses", "compute_clusters", "lakeflow_jobs",
+              "lakeflow_job_run_timeline", "lakeflow_pipelines",
+              "lakeflow_pipeline_update_timeline", "access_table_lineage", "billing_usage",
+              "serving_served_entities", "access_audit",
+              "storage_predictive_optimization_operations_history")
+)
+
+#: Spend and a job in a second workspace, to prove the filter keeps them out.
+WORKSPACE_TWO_DDL = """
+INSERT INTO billing_usage (usage_date, billing_origin_product, sku_name, usage_unit, usage_type,
+    cloud, usage_end_time, usage_quantity, usage_metadata, product_features, workspace_id) VALUES
+  (DATE '2029-12-30', 'SQL', 'PREMIUM_SERVERLESS_SQL_COMPUTE_US_EAST', 'DBU', 'COMPUTE_TIME', 'AWS',
+   TIMESTAMP '2029-12-30 11:00', 100.0, {'warehouse_id': 'wh9', 'job_id': NULL},
+   {'is_serverless': true}, '2'),
+  (DATE '2029-12-30', 'DEFAULT_STORAGE', 'PREMIUM_DATABRICKS_STORAGE_US_EAST', 'GB_MONTH', 'STORAGE_SPACE',
+   'AWS', TIMESTAMP '2029-12-30 11:00', 7.0, {'warehouse_id': NULL, 'job_id': NULL},
+   {'is_serverless': false}, NULL);
+INSERT INTO lakeflow_jobs (job_id, name, trigger_type, paused, workspace_id)
+  SELECT job_id, name, trigger_type, paused, '2' FROM lakeflow_jobs LIMIT 1;
 """
 
 _PER_CAT_RE = re.compile(r"`((?:[^`]|``)+)`\.information_schema\.(\w+)")
@@ -337,18 +377,25 @@ class FakeDatabricks:
                  denied_catalogs: set[str] = frozenset(),
                  detail_errors: dict | None = None,
                  hive: dict | None = HIVE, hive_cap: int = 2000,
-                 jobs_denied: bool = False) -> None:
+                 jobs_denied: bool = False,
+                 workspace_ids: tuple[str, ...] | None = None,
+                 second_workspace: bool = False) -> None:
         self.db = duckdb.connect()
         self.db.execute(DDL)
         self.db.execute(SEED)
         self.db.execute(WORKLOAD_DDL)
         self.db.execute(SYSTEM_DDL)
+        self.db.execute(WORKSPACE_DDL)
+        if second_workspace:
+            self.db.execute(WORKSPACE_TWO_DDL)
+        self.workspace_ids = workspace_ids
         self.denied_views = set(denied_views)
         self.denied_catalogs = set(denied_catalogs)
         self.detail_errors = detail_errors or {}
         self.hive = hive
         self.hive_cap = hive_cap
         self.jobs_denied = jobs_denied
+        self.scope_predicate = ""
         self.queries: list[str] = []
         self.closed = False
 
@@ -383,11 +430,27 @@ class FakeDatabricks:
             sql = _SYSTEM_TABLE_RE.sub(system_table, sql)
             sql = _RAW_LITERAL_RE.sub("'", sql).replace(
                 "current_timestamp()", f"TIMESTAMP '{SERVER_ANCHOR:%Y-%m-%d %H:%M:%S}'"
-            )
+            ).replace("explode(sequence(", "unnest(generate_series(")
         return _SYSTEM_RE.sub(system, _PER_CAT_RE.sub(per_cat, sql))
+
+    def set_scope_predicate(self, predicate: str) -> None:
+        """Record the --scope SQL predicate; table details are limited to it, as the live source does."""
+        self.scope_predicate = predicate or ""
+
+    def _in_scope(self) -> set:
+        """Tables of the synthetic estate that match the recorded scope predicate."""
+        if not self.scope_predicate:
+            return set(DETAILS)
+        keys = ", ".join(f"('{c}', '{s}', '{t}')" for c, s, t in DETAILS)
+        rows = self.db.execute(
+            f"SELECT table_catalog, table_schema, table_name FROM (VALUES {keys}) "
+            f"AS t(table_catalog, table_schema, table_name) WHERE ({self.scope_predicate})"
+        ).fetchall()
+        return {tuple(r) for r in rows}
 
     def reader(self, sql: str) -> pa.Table:
         """Record the query, then run it against the fake tables."""
+        sql = render_workspace_filter(sql, self.workspace_ids)
         self.queries.append(sql)
         return self.db.execute(self._rewrite(sql)).arrow()
 
@@ -415,6 +478,8 @@ class FakeDatabricks:
         assert command == TABLE_DETAILS_COMMAND, command
         rows = []
         for (cat, sch, tbl), d in sorted(DETAILS.items()):
+            if (cat, sch, tbl) not in self._in_scope():
+                continue
             err = self.detail_errors.get((cat, sch, tbl))
             rows.append(detail_row(cat, sch, tbl, None if err else d, error=err))
         return details_table(rows), False

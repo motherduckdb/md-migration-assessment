@@ -12,4 +12,5 @@ SELECT
     count(DISTINCT user_identity.email) AS n_distinct_users
 FROM system.access.audit
 WHERE event_date >= CAST(current_timestamp() - INTERVAL {window_days} DAYS AS DATE)
+{workspace_filter}
 GROUP BY 1, 2, 3

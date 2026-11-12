@@ -167,9 +167,12 @@ def publish(collection: Path, database: str, dive_title: str, replace: bool) -> 
         args += ["--title", dive_title]
     if replace:
         args.append("--replace")
-    result = subprocess.run(args, check=True, capture_output=True, text=True, env=pub_env)
+    result = subprocess.run(args, capture_output=True, text=True, env=pub_env)
     if result.stderr:
         print(result.stderr, end="")
+    if result.returncode != 0:
+        print(result.stdout, end="")
+        raise RuntimeError(f"md-assess publish failed with exit code {result.returncode}")
     s = json.loads(result.stdout)
     print(f"publish: database md:{s['database']} ({s['handoff_tables']} tables, "
           f"{s['handoff_rows']:,} rows)")

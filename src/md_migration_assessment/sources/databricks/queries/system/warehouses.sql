@@ -13,4 +13,5 @@ SELECT
     change_time AS change_time,
     delete_time AS delete_time
 FROM system.compute.warehouses
-QUALIFY row_number() OVER (PARTITION BY warehouse_id ORDER BY change_time DESC) = 1
+WHERE true {workspace_filter}
+QUALIFY row_number() OVER (PARTITION BY workspace_id, warehouse_id ORDER BY change_time DESC) = 1

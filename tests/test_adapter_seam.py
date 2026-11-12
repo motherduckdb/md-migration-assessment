@@ -725,3 +725,32 @@ def test_unknown_reason_covers_extract_statuses(out_db):
         "SELECT count(*) FROM report.feature_inventory "
         "WHERE observation_status <> 'unknown' AND unknown_reason IS NOT NULL"
     ).fetchone()[0] == 0
+
+
+def test_visibility_bound_global_query_and_unscoped_extract_are_disclosed(out_db, tmp_path):
+    """A visibility-bound global query says so in its coverage, and an extract
+    with nothing to scope by says it was collected deployment-wide under --scope."""
+    import dataclasses
+
+    def bound(ex):
+        """The same extractor with its global query marked visibility-bound."""
+        if ex.name != "events":
+            return ex
+        return dataclasses.replace(ex, sources=(GlobalQuery(
+            "global/events.sql", "global", min_profile=Profile.STANDARD, visibility_bound=True),))
+
+    adapter = dataclasses.replace(ADAPTER, extractors=[bound(e) for e in ADAPTER.extractors])
+    scope = Scope.parse(["appdb"], adapter.scope)
+    coll = run_collection(out_db, adapter, FakeConnection(), profile=Profile.STANDARD, scope=scope)
+    st = runs(out_db, coll)
+    assert st["events"]["status"] == "complete"
+    assert "role-visibility bound" in st["events"]["error_detail"]
+    assert "collected deployment-wide" in st["events"]["error_detail"]
+    # an extract with scope columns was scoped in SQL: no deployment-wide note
+    assert "deployment-wide" not in (st["widget_sizes"]["error_detail"] or "")
+
+    # without --scope there is nothing to disclose about scope
+    other = open_output(str(tmp_path / "unscoped.duckdb"))
+    coll = run_collection(other, adapter, FakeConnection(), profile=Profile.STANDARD)
+    assert "deployment-wide" not in runs(other, coll)["events"]["error_detail"]
+    other.close()

@@ -15,4 +15,5 @@ SELECT
     max(start_time) AS last_seen
 FROM system.query.history
 WHERE start_time >= current_timestamp() - INTERVAL {window_days} DAYS
+{workspace_filter}
 GROUP BY 1, 2, 3, 4

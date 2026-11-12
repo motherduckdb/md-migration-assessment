@@ -24,5 +24,6 @@ SELECT
     sum(waiting_for_compute_duration_ms) AS sum_waiting_for_compute_ms
 FROM system.query.history
 WHERE start_time >= current_timestamp() - INTERVAL {window_days} DAYS
+{workspace_filter}
 {scope_filter}
 GROUP BY 1, 2, 3, 4

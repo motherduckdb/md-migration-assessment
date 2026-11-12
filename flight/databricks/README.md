@@ -37,7 +37,7 @@ pin it in `requirements.txt` and drop `load_collector()`.
 | `DIVE_TITLE` | `Databricks Migration Assessment (Flight test)` |
 | `PROFILE` / `HISTORY_DAYS` / `REPLACE` | `standard` / `30` / `true` |
 
-Optional settings are `SCOPE`, `SECRET_NAME`, `WHEEL_DB` and `WHEEL_VERSION`.
+Optional settings are `SCOPE`, `DATABRICKS_WORKSPACES`, `SECRET_NAME`, `WHEEL_DB` and `WHEEL_VERSION`.
 
 Tested on 2026-11-06 against a synthetic Unity Catalog workspace: 34 of 35
 extractors completed. `hive_metastore_tables` is unavailable because that

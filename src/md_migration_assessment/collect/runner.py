@@ -32,6 +32,7 @@ falls through to the next; a real failure stops the extractor as
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, Iterable
@@ -120,6 +121,19 @@ class Scope:
         return " OR ".join(parts)
 
 
+#: ``{scope_match:<database column>:<schema column>}`` renders to a boolean:
+#: TRUE without --scope, else the scope predicate over those columns. For
+#: extracts with more than one pair of scope columns (lineage has a source
+#: and a target table), where ``{scope_filter}`` can name only one.
+_SCOPE_MATCH_RE = re.compile(r"\{scope_match:([A-Za-z_][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _scope_match(scope: "Scope | None", db_col: str, schema_col: str) -> str:
+    """The scope predicate over one pair of columns, or TRUE when unscoped."""
+    pred = scope.predicate({"database": db_col, "schema": schema_col}) if scope else ""
+    return f"({pred})" if pred else "TRUE"
+
+
 def _render(
     sql: str,
     *,
@@ -127,9 +141,11 @@ def _render(
     window_days: int | None,
     database: str | None = None,
     quote: Callable[[str], str] | None = None,
+    scope: "Scope | None" = None,
 ) -> str:
     scope_filter = f"AND ({scope_pred})" if scope_pred else ""
     out = sql.replace("{scope_filter}", scope_filter)
+    out = _SCOPE_MATCH_RE.sub(lambda m: _scope_match(scope, m.group(1), m.group(2)), out)
     if window_days is not None:
         out = out.replace("{window_days}", str(int(window_days)))
     if database is not None:
@@ -151,6 +167,12 @@ VISIBILITY_NOTE = (
     "role-visibility bound: lists only objects the collecting role has "
     "privileges on; objects it cannot see are undetectable, so counts are "
     "lower bounds and zero is not proof of absence"
+)
+
+
+#: Coverage note for a query extract that has nothing to scope by.
+DEPLOYMENT_WIDE_NOTE = (
+    "collected deployment-wide: this extract has no database residency to scope by"
 )
 
 
@@ -462,10 +484,12 @@ def _run_extractor(
                 skipped_by_profile = True
                 continue
             try:
+                raw_sql = adapter.load_sql(strategy.sql)
                 sql = _render(
-                    adapter.load_sql(strategy.sql),
+                    raw_sql,
                     scope_pred=scope_pred,
                     window_days=window_days,
+                    scope=scope,
                 )
                 # Anchor from the SERVER's clock, captured before the extract
                 # executes: statement order on the one server clock guarantees
@@ -480,8 +504,11 @@ def _run_extractor(
                 run.rows_written = ing.finish()
                 run.status = "complete"
                 run.source_used = strategy.label
+                # --scope is a privacy boundary: say so when it could not apply.
+                unscoped = bool(scope) and not ex.scope_columns and "{scope_match:" not in raw_sql
                 run.error_detail = _join_notes(
                     _fallback_note(unavailable, strategy.label),
+                    DEPLOYMENT_WIDE_NOTE if unscoped else None,
                     VISIBILITY_NOTE if strategy.visibility_bound else None,
                 )
                 if window_days is not None:
@@ -544,6 +571,11 @@ def _run_command(
     # scope-filtered CLIENT-SIDE before anything is persisted — --scope is a
     # privacy boundary, and out-of-scope object names must not land in the
     # output database (found in review, 2026-08-18).
+    # A source that can filter before its own cap (Databricks table_details)
+    # gets the predicate first; the client-side filter below still runs.
+    set_pred = getattr(source, "set_scope_predicate", None)
+    if set_pred is not None:
+        set_pred(scope.predicate(ex.scope_columns) if scope else "")
     try:
         table, truncated = source.command(strategy.command)
         scope_note = None
@@ -692,6 +724,7 @@ def _run_per_database(
                 window_days=window_days,
                 database=database,
                 quote=adapter.scope.quote,
+                scope=scope,
             )
             ing.ingest(source.reader(sql))
             succeeded.append(database)

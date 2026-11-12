@@ -1,8 +1,7 @@
 // Source-specific wording. The panels and SQL are shared across adapters;
 // only the vocabulary changes with meta.collections.source_kind.
-import { useSQLQuery } from '@motherduck/react-sql-query';
+import { createContext, createElement, useContext, type ReactNode } from 'react';
 import { S } from './format';
-import * as Q from './queries';
 
 export type Vendor = {
   name: string;
@@ -31,8 +30,28 @@ const DATABRICKS: Vendor = {
   spendNote: 'Daily DBUs per SQL warehouse, or per product (jobs, pipelines, serverless, model serving) when no warehouse applies, over the history window.',
 };
 
+type CollectionRow = Record<string, unknown>;
+type VendorValue = { vendor: Vendor; row: CollectionRow };
+
+export const VendorContext = createContext<VendorValue | null>(null);
+
+// Picks the vocabulary from the collection row, which the Dive loads once at the top.
+export function VendorProvider({ row, children }: { row: CollectionRow; children: ReactNode }) {
+  const vendor = S(row.source_kind) === 'databricks' ? DATABRICKS : SNOWFLAKE;
+  return createElement(VendorContext.Provider, { value: { vendor, row } }, children);
+}
+
+function useVendorValue(): VendorValue {
+  const v = useContext(VendorContext);
+  if (!v) throw new Error('useVendor must be used inside <VendorProvider>');
+  return v;
+}
+
 export function useVendor(): Vendor {
-  const coll = useSQLQuery(Q.collection());
-  const c = (Array.isArray(coll.data) ? coll.data : [])[0] ?? {};
-  return S(c.source_kind) === 'databricks' ? DATABRICKS : SNOWFLAKE;
+  return useVendorValue().vendor;
+}
+
+// The single collection row, for panels that need more than the vocabulary.
+export function useCollectionRow(): CollectionRow {
+  return useVendorValue().row;
 }

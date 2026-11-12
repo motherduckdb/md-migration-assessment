@@ -120,6 +120,10 @@ class SourceAdapter(Protocol):
 
     #: registry key and ``meta.collections.source_kind`` value
     name: str
+    #: product name for titles and descriptions, e.g. ``"Snowflake"``
+    display_name: str
+    #: what one deployment is called, e.g. ``"Snowflake account"``
+    deployment_noun: str
     #: version of this adapter's raw.* table shapes (bump on any extract
     #: column change; recorded per collection, checked by report/handoff)
     raw_schema_version: int

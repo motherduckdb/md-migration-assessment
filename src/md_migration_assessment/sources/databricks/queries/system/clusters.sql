@@ -17,4 +17,5 @@ SELECT
     create_time AS create_time,
     delete_time AS delete_time
 FROM system.compute.clusters
-QUALIFY row_number() OVER (PARTITION BY cluster_id ORDER BY change_time DESC) = 1
+WHERE true {workspace_filter}
+QUALIFY row_number() OVER (PARTITION BY workspace_id, cluster_id ORDER BY change_time DESC) = 1

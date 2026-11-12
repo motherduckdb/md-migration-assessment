@@ -24,7 +24,7 @@ import { ConcurrencyPanel } from './panels/concurrency';
 import { RiskPanel } from './panels/risk';
 import { IngestionPanel } from './panels/ingestion';
 import { CSS, Skeleton, Warn } from './ui';
-import { useVendor } from './vendor';
+import { VendorProvider, useCollectionRow, useVendor } from './vendor';
 
 // `md-assess publish` rewrites the path to the uploaded database; the alias is
 // what every query in ./queries.ts uses and must stay `assessment`.
@@ -38,24 +38,19 @@ export const REQUIRED_DATABASES = [
 
 function Header() {
   const v = useVendor();
-  const coll = useSQLQuery(Q.collection());
+  const c = useCollectionRow();
   const win = useSQLQuery(Q.window());
-  const c = (Array.isArray(coll.data) ? coll.data : [])[0] ?? {};
   const w = (Array.isArray(win.data) ? win.data : [])[0] ?? {};
   const account = [S(c.source_deployment), S(c.source_region)].filter(Boolean).join(' · ') || '(account not recorded)';
   return (
     <header>
       <h1 style={{ fontSize: 22, margin: '4px 0 6px', fontWeight: 600 }}>{v.name} → MotherDuck migration assessment</h1>
-      {coll.isLoading && !coll.data ? (
-        <Skeleton height={60} />
-      ) : (
-        <p style={{ margin: '0 0 8px', maxWidth: 1200 }}>
-          Read-only dashboard over the <code>md-assess</code> {S(c.tool_version)} collection (profile {S(c.profile) || 'standard'}) of {v.account} <strong>{account}</strong>
-          {c.started_at ? <>, collected {S(c.started_at)}</> : null}. History window:{' '}
-          <strong>{w.window_start ? `${S(w.window_start)} → ${S(w.window_end)}` : 'unknown'}</strong> ({N(c.history_days) || '?'} days requested). Every count excludes {v.name} system objects unless the system-objects toggle is on. Counts marked <strong>≥</strong> are lower bounds limited by what the collecting role could see. Missing evidence is never shown as zero:{' '}
-          <span className="chip chip-unknown">unknown</span> is a distinct state from <span className="chip chip-zero">observed zero</span>. {v.credits}; latencies are server-side elapsed time.
-        </p>
-      )}
+      <p style={{ margin: '0 0 8px', maxWidth: 1200 }}>
+        Read-only dashboard over the <code>md-assess</code> {S(c.tool_version)} collection (profile {S(c.profile) || 'standard'}) of {v.account} <strong>{account}</strong>
+        {c.started_at ? <>, collected {S(c.started_at)}</> : null}. History window:{' '}
+        <strong>{w.window_start ? `${S(w.window_start)} → ${S(w.window_end)}` : 'unknown'}</strong> ({N(c.history_days) || '?'} days requested). Every count excludes {v.name} system objects unless the system-objects toggle is on. Counts marked <strong>≥</strong> are lower bounds limited by what the collecting role could see. Missing evidence is never shown as zero:{' '}
+        <span className="chip chip-unknown">unknown</span> is a distinct state from <span className="chip chip-zero">observed zero</span>. {v.credits}; latencies are server-side elapsed time.
+      </p>
       <Warn>This dashboard names real databases, schemas, tables, warehouses and tools. Share it only with people entitled to see them.</Warn>
     </header>
   );
@@ -78,7 +73,26 @@ function MultiSelect({ label, options, value, onChange }: { label: string; optio
   );
 }
 
+// Resolve the vendor once here; render nothing vendor-specific until the collection row is known.
 export default function AssessmentDashboard() {
+  const coll = useSQLQuery(Q.collection());
+  if (coll.isLoading && !coll.data) {
+    return (
+      <div className="mda" style={{ background: BG, padding: '16px 20px 40px', minHeight: '100%' }}>
+        <style>{CSS}</style>
+        <Skeleton height={120} />
+      </div>
+    );
+  }
+  const row = (Array.isArray(coll.data) ? coll.data : [])[0] ?? {};
+  return (
+    <VendorProvider row={row}>
+      <Dashboard />
+    </VendorProvider>
+  );
+}
+
+function Dashboard() {
   const vendor = useVendor();
   const [wh, setWh] = useDiveState<string[]>('wh', []);
   const [range, setRange] = useDiveState<DateRange>('range', null);

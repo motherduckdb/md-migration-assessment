@@ -152,8 +152,13 @@ access token (`DATABRICKS_TOKEN`) also works but ties the run to a person. To
 run on MotherDuck compute instead of your machine, see
 [`flight/databricks/`](flight/databricks/README.md).
 
-The grants the collector needs are listed in the Databricks Flight cookbook
-recipe. Any grant left out only marks that extractor `unavailable`; the rest
+Spend, queries and jobs cover only the workspace you connect to. To cover more,
+set `DATABRICKS_WORKSPACES` to `all` or to a comma-separated list of workspace
+IDs. The report lists the workspaces it covered.
+
+The collector sees only what its login is granted, so use a login that can see
+everything you want assessed. The grants it needs are listed in the Databricks
+Flight cookbook recipe. Any grant left out only marks that extractor `unavailable`; the rest
 of the collection still runs.
 
 ## Local dashboard

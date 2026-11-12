@@ -12,11 +12,18 @@ Configuration comes from the environment only:
   otherwise browser OAuth (U2M) for interactive local runs.
 - ``DATABRICKS_DETAIL_MAX_TABLES``: cap on per-table DESCRIBE DETAIL calls
   (default 2000); hitting it marks ``table_details`` partial.
+- ``DATABRICKS_JOBS_MAX``: cap on jobs read and notebook get-status calls
+  for ``job_tasks`` (default 2000), separate from the DESCRIBE DETAIL cap.
+- ``DATABRICKS_WORKSPACES``: which workspaces the system tables (spend,
+  queries, jobs, ...) cover. Unset or ``current``: only the workspace you
+  connect to. ``all``: every workspace the account's system tables hold.
+  Or a comma-separated list of workspace IDs.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -45,6 +52,52 @@ _DETAIL_TYPES = ("MANAGED", "EXTERNAL", "MANAGED_SHALLOW_CLONE", "EXTERNAL_SHALL
 
 DEFAULT_DETAIL_MAX_TABLES = 2000
 
+#: Default cap on jobs listed and notebook get-status calls (DATABRICKS_JOBS_MAX).
+DEFAULT_JOBS_MAX = 2000
+
+#: Most jobs/get pages read for one job's tasks before giving up (marks partial).
+_MAX_TASK_PAGES = 50
+
+
+#: Placeholder in system-table SQL. ``{workspace_filter}`` (or
+#: ``{workspace_filter:alias}``) becomes "AND workspace_id IN (...)", or
+#: nothing when every workspace is wanted.
+_WORKSPACE_FILTER_RE = re.compile(r"\{workspace_filter(?::(\w+))?\}")
+
+
+def parse_workspaces(value: str | None) -> str | tuple[str, ...]:
+    """Read DATABRICKS_WORKSPACES: "current" (the default), "all", or a tuple of workspace IDs."""
+    text = (value or "").strip().lower()
+    if text in ("", "current"):
+        return "current"
+    if text == "all":
+        return "all"
+    ids = tuple(part.strip() for part in text.split(",") if part.strip())
+    bad = [i for i in ids if not i.isdigit()]
+    if bad or not ids:
+        raise ValueError(
+            "DATABRICKS_WORKSPACES must be 'current', 'all' or comma-separated "
+            f"workspace IDs (numbers); got {value!r}"
+        )
+    return ids
+
+
+def render_workspace_filter(sql: str, workspace_ids: tuple[str, ...] | None) -> str:
+    """Limit a system-table query to the chosen workspaces. None means every workspace.
+
+    Rows with no workspace (account-level spend such as default storage) are
+    kept: they can't be split by workspace, and dropping them would undercount.
+    """
+    def sub(m: re.Match) -> str:
+        """The filter for one placeholder, with the table alias if it has one."""
+        if workspace_ids is None:
+            return ""
+        col = f"{m.group(1)}.workspace_id" if m.group(1) else "workspace_id"
+        ids = ", ".join(repr(str(i)) for i in workspace_ids)
+        return f"AND ({col} IN ({ids}) OR {col} IS NULL)"
+
+    return _WORKSPACE_FILTER_RE.sub(sub, sql)
+
 
 def bq(name: str) -> str:
     """Backtick-quote a Unity Catalog identifier."""
@@ -60,6 +113,8 @@ class DatabricksConfig:
     client_id: str | None = None
     client_secret: str | None = None
     detail_max_tables: int = DEFAULT_DETAIL_MAX_TABLES
+    jobs_max: int = DEFAULT_JOBS_MAX
+    workspaces: str | tuple[str, ...] = "current"
 
     @classmethod
     def from_env(cls) -> "DatabricksConfig":
@@ -83,6 +138,8 @@ class DatabricksConfig:
             detail_max_tables=int(
                 env.get("DATABRICKS_DETAIL_MAX_TABLES") or DEFAULT_DETAIL_MAX_TABLES
             ),
+            jobs_max=int(env.get("DATABRICKS_JOBS_MAX") or DEFAULT_JOBS_MAX),
+            workspaces=parse_workspaces(env.get("DATABRICKS_WORKSPACES")),
         )
 
     @property
@@ -94,8 +151,19 @@ class DatabricksConfig:
             return "m2m"
         return "u2m"
 
-    def connect_kwargs(self) -> dict:
-        """Arguments for the SQL connector that match the login method."""
+    def u2m_sdk_config(self):
+        """Build the one databricks-sdk Config for browser sign-in (U2M); SQL and REST both use it."""
+        try:
+            from databricks.sdk.core import Config
+        except ImportError as exc:  # pragma: no cover - environment-dependent
+            raise ImportError("browser sign-in needs databricks-sdk: pip install databricks-sdk") from exc
+        return Config(host=f"https://{self.host}", auth_type="external-browser")
+
+    def connect_kwargs(self, sdk_config=None) -> dict:
+        """Arguments for the SQL connector that match the login method.
+
+        In U2M mode, pass the shared SDK ``sdk_config`` so the SQL connector
+        reuses its credentials and the browser opens only once."""
         kw: dict = {"server_hostname": self.host, "http_path": self.http_path}
         mode = self.auth_mode
         if mode == "pat":
@@ -113,6 +181,8 @@ class DatabricksConfig:
                 client_secret=self.client_secret,
             )
             kw["credentials_provider"] = lambda: oauth_service_principal(cfg)
+        elif sdk_config is not None:
+            kw["credentials_provider"] = lambda: sdk_config.authenticate
         else:
             kw["auth_type"] = "databricks-oauth"
         return kw
@@ -235,6 +305,7 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
     rows: list[dict] = []
     lookups = 0
     lookups_capped = False
+    seen: dict[str, str | None] = {}  # each notebook path is looked up once
     for job in jobs:
         settings = job.get("settings") or {}
         trigger, paused = _trigger_kind(settings)
@@ -257,12 +328,15 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
                 path = body.get("notebook_path")
                 language = _language_from_path(path)
                 if language is None and source != "GIT" and path:
-                    if lookups < cap:
+                    if path in seen:
+                        language = seen[path]
+                    elif lookups < cap:
                         lookups += 1
                         try:
                             language = notebook_language(path)
                         except Exception:  # noqa: BLE001 - one notebook must not sink the rest
                             language = None
+                        seen[path] = language
                     else:
                         lookups_capped = True
             elif ttype in ("spark_python", "python_wheel", "python_operator"):
@@ -313,17 +387,32 @@ def details_table(rows: list[dict]) -> pa.Table:
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-def detail_targets_sql(limit: int) -> str:
-    """Query for the tables to describe. It asks for one more than the limit, so a cap can be detected."""
+def _like_escape(text: str) -> str:
+    """Escape LIKE wildcards (_ and %) in a literal prefix, for use with ESCAPE '!'.
+
+    Not backslash: in Databricks SQL a backslash escapes the closing quote,
+    so ESCAPE '\\' is an unterminated string there (it is fine in DuckDB).
+    """
+    return text.replace("!", "!!").replace("_", "!_").replace("%", "!%")
+
+
+def detail_targets_sql(limit: int, scope_predicate: str = "") -> str:
+    """Query for the tables to describe, limited to --scope before the cap.
+
+    ``scope_predicate`` is the runner's SQL over table_catalog/table_schema.
+    It asks for one more than the limit, so a cap can be detected."""
     excluded = ", ".join(f"'{c}'" for c in sorted(EXCLUDED_CATALOGS))
     types = ", ".join(f"'{t}'" for t in _DETAIL_TYPES)
-    hidden = " AND ".join(f"table_name NOT LIKE '{p}%'" for p in HIDDEN_TABLE_PREFIXES)
+    hidden = " AND ".join(
+        f"table_name NOT LIKE '{_like_escape(p)}%' ESCAPE '!'" for p in HIDDEN_TABLE_PREFIXES
+    )
+    scope = f"AND ({scope_predicate}) " if scope_predicate else ""
     return (
         "SELECT table_catalog, table_schema, table_name "
         "FROM system.information_schema.tables "
         f"WHERE table_catalog NOT IN ({excluded}) "
         "AND table_schema <> 'information_schema' "
-        f"AND table_type IN ({types}) AND {hidden} "
+        f"AND table_type IN ({types}) AND {hidden} {scope}"
         "ORDER BY table_catalog, table_schema, table_name "
         f"LIMIT {int(limit) + 1}"
     )
@@ -333,13 +422,21 @@ class DatabricksSource:
     """Live Databricks SQL connection. Tests substitute a fake with the same shape."""
 
     def __init__(self, conn, detail_max_tables: int = DEFAULT_DETAIL_MAX_TABLES,
-                 deployment: str | None = None, cfg: DatabricksConfig | None = None) -> None:
-        """Wrap a connection. The config is only needed for Jobs API calls."""
+                 deployment: str | None = None, cfg: DatabricksConfig | None = None,
+                 jobs_max: int | None = None, sdk_config=None) -> None:
+        """Wrap a connection. The config is only needed for Jobs API calls; ``jobs_max`` caps job_tasks reads."""
         self._conn = conn
         self._detail_max_tables = detail_max_tables
+        self._jobs_max = jobs_max if jobs_max is not None else (
+            cfg.jobs_max if cfg else DEFAULT_JOBS_MAX)
+        self._sdk_config = sdk_config
+        self._scope_predicate = ""
         self._deployment = deployment
         self._cfg = cfg
         self._api = None
+        self._api_ws = None
+        self._workspace_ids: tuple[str, ...] | None | bool = False  # False = not looked up yet
+        self._workspace_error: Exception | None = None
 
     @classmethod
     def open(cls, cfg: DatabricksConfig) -> "DatabricksSource":
@@ -351,7 +448,13 @@ class DatabricksSource:
                 "the Databricks SQL connector is not installed; install the "
                 "'databricks' extra: pip install 'md-migration-assessment[databricks]'"
             ) from exc
-        return cls(dbsql.connect(**cfg.connect_kwargs()), cfg.detail_max_tables, cfg.host, cfg)
+        sdk_config = cfg.u2m_sdk_config() if cfg.auth_mode == "u2m" else None
+        return cls(dbsql.connect(**cfg.connect_kwargs(sdk_config)), cfg.detail_max_tables,
+                   cfg.host, cfg, sdk_config=sdk_config)
+
+    def set_scope_predicate(self, predicate: str) -> None:
+        """Set the --scope SQL predicate (over table_catalog/table_schema) applied before the DESCRIBE DETAIL cap."""
+        self._scope_predicate = predicate or ""
 
     def _fetch(self, sql: str) -> pa.Table:
         """Run one statement and return its rows as an Arrow table."""
@@ -360,8 +463,35 @@ class DatabricksSource:
             return cur.fetchall_arrow()
 
     def reader(self, sql: str) -> pa.RecordBatchReader | pa.Table:
-        """Run an extract query. The result comes back as one in-memory table."""
+        """Run an extract query, limited to the chosen workspaces. The result comes back as one in-memory table."""
+        if _WORKSPACE_FILTER_RE.search(sql):
+            sql = render_workspace_filter(sql, self.workspace_ids())
         return self._fetch(sql)
+
+    def workspace_ids(self) -> tuple[str, ...] | None:
+        """The workspace IDs the system tables are limited to, or None for all.
+        "current" asks Databricks which workspace we are connected to; if it
+        can't tell, the system-table extracts fail with a clear message rather
+        than silently counting every workspace."""
+        if self._workspace_error is not None:
+            raise self._workspace_error
+        if self._workspace_ids is False:
+            choice = self._cfg.workspaces if self._cfg else "all"
+            if choice == "all":
+                self._workspace_ids = None
+            elif choice == "current":
+                try:
+                    self._rest_client()
+                    self._workspace_ids = (str(self._api_ws.get_workspace_id()),)
+                except Exception as exc:  # noqa: BLE001 - re-raised with advice
+                    self._workspace_error = RuntimeError(
+                        "could not find this workspace's ID; set DATABRICKS_WORKSPACES "
+                        f"to the workspace ID, or to 'all': {exc}"
+                    )
+                    raise self._workspace_error from exc
+            else:
+                self._workspace_ids = tuple(choice)
+        return self._workspace_ids
 
     def command(self, command: str) -> tuple[pa.Table, bool]:
         """Run an extract that is not one SQL query. Returns the rows and whether a cap cut them short."""
@@ -372,7 +502,7 @@ class DatabricksSource:
         if command != TABLE_DETAILS_COMMAND:
             raise ValueError(f"unsupported Databricks command: {command!r}")
         cap = self._detail_max_tables
-        targets = self._fetch(detail_targets_sql(cap)).to_pylist()
+        targets = self._fetch(detail_targets_sql(cap, self._scope_predicate)).to_pylist()
         truncated = len(targets) > cap
         rows: list[dict] = []
         for t in targets[:cap]:
@@ -386,10 +516,8 @@ class DatabricksSource:
                 rows.append(detail_row(cat, sch, tbl, None, error=str(exc)))
         return details_table(rows), truncated
 
-    def _rest(self, path: str, query: dict) -> dict:
-        """GET a workspace REST endpoint with the same credentials as SQL.
-        API errors are re-raised with their error code first, so the
-        adapter's classifier sees PERMISSION_DENIED and friends."""
+    def _rest_client(self) -> None:
+        """Sign in to the workspace REST API once, with the same login as SQL."""
         if self._api is None:
             if self._cfg is None:
                 raise RuntimeError("PERMISSION_DENIED: no REST credentials for this connection")
@@ -402,8 +530,17 @@ class DatabricksSource:
             elif cfg.auth_mode == "m2m":
                 kw.update(client_id=cfg.client_id, client_secret=cfg.client_secret)
             else:
-                kw["auth_type"] = "external-browser"
-            self._api = WorkspaceClient(**kw).api_client
+                if self._sdk_config is None:
+                    self._sdk_config = cfg.u2m_sdk_config()
+                kw = {"config": self._sdk_config}  # the same sign-in the SQL connection uses
+            self._api_ws = WorkspaceClient(**kw)
+            self._api = self._api_ws.api_client
+
+    def _rest(self, path: str, query: dict) -> dict:
+        """GET a workspace REST endpoint with the same credentials as SQL.
+        API errors are re-raised with their error code first, so the
+        adapter's classifier sees PERMISSION_DENIED and friends."""
+        self._rest_client()
         try:
             return self._api.do("GET", path, query=query) or {}
         except Exception as exc:  # normalized for classify_error, then re-raised
@@ -412,9 +549,39 @@ class DatabricksSource:
                 code = "PERMISSION_DENIED"
             raise RuntimeError(f"{code}: {exc}") from exc
 
+    def _expand_job(self, job: dict) -> bool:
+        """Fetch all tasks and job clusters of a job whose arrays were cut at 100 (jobs/get, API 2.2).
+
+        Updates ``job`` in place. Returns False if that failed, so the extract is marked partial."""
+        try:
+            tasks: list = []
+            clusters: list = []
+            token = None
+            for _ in range(_MAX_TASK_PAGES):
+                q = {"job_id": job.get("job_id")}
+                if token:
+                    q["page_token"] = token
+                page = self._rest("/api/2.2/jobs/get", q)
+                s = page.get("settings") or {}
+                tasks.extend(s.get("tasks") or [])
+                clusters.extend(s.get("job_clusters") or [])
+                token = page.get("next_page_token")
+                if not token:
+                    settings = dict(job.get("settings") or {})
+                    settings["tasks"], settings["job_clusters"] = tasks, clusters
+                    job["settings"] = settings
+                    job["has_more"] = False
+                    return True
+            return False
+        except Exception:  # noqa: BLE001 - keep the first page of tasks, mark partial
+            return False
+
     def _job_tasks(self) -> tuple[pa.Table, bool]:
-        """Read jobs from the Jobs API and flatten their tasks. Stops at the cap and says so."""
-        cap = self._detail_max_tables
+        """Read jobs from the Jobs API and flatten their tasks.
+
+        The job list and notebook get-status calls stop at DATABRICKS_JOBS_MAX; jobs with more
+        than 100 tasks are paged through jobs/get. Any cut or failure marks the extract partial."""
+        cap = self._jobs_max
         jobs: list[dict] = []
         token = None
         while True:
@@ -427,12 +594,21 @@ class DatabricksSource:
             if not token or len(jobs) > cap:
                 break
         truncated = len(jobs) > cap or bool(token)
+        jobs = jobs[:cap]
+        for job in jobs:
+            if job.get("has_more") and not self._expand_job(job):
+                truncated = True
+
+        cache: dict[str, str | None] = {}
 
         def language(path: str) -> str | None:
-            """Notebook language from the workspace, or None."""
-            return self._rest("/api/2.0/workspace/get-status", {"path": path}).get("language")
+            """Notebook language from the workspace (cached per path), or None."""
+            if path not in cache:
+                cache[path] = self._rest(
+                    "/api/2.0/workspace/get-status", {"path": path}).get("language")
+            return cache[path]
 
-        rows, capped = job_task_rows(jobs[:cap], language, cap)
+        rows, capped = job_task_rows(jobs, language, cap)
         return job_tasks_table(rows), truncated or capped
 
     def _hive_tables(self) -> tuple[pa.Table, bool]:

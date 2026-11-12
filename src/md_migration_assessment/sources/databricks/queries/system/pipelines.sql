@@ -12,4 +12,5 @@ SELECT
     create_time AS create_time,
     delete_time AS delete_time
 FROM system.lakeflow.pipelines
-QUALIFY row_number() OVER (PARTITION BY pipeline_id ORDER BY change_time DESC) = 1
+WHERE true {workspace_filter}
+QUALIFY row_number() OVER (PARTITION BY workspace_id, pipeline_id ORDER BY change_time DESC) = 1

@@ -143,6 +143,9 @@ def _build_readable_in_place(con: duckdb.DuckDBPyConnection) -> None:
                         OR lower(coalesce(uniform_formats, '')) LIKE '%iceberg%'
                         THEN 'uc_iceberg_rest'
                     WHEN fmt = 'DELTA' AND table_type LIKE 'EXTERNAL%' THEN 'delta_scan'
+                    -- Without complete table details, a missing UniForm list means "not looked at", not "none".
+                    WHEN fmt = 'DELTA' AND uniform_formats IS NULL
+                        AND details_extract_status <> 'complete' THEN 'unknown'
                     WHEN fmt = 'DELTA' THEN 'enable_uniform_or_copy'
                     WHEN fmt IN ('PARQUET', 'CSV', 'JSON') THEN 'file_scan'
                     ELSE 'copy'
@@ -155,10 +158,10 @@ def _build_readable_in_place(con: duckdb.DuckDBPyConnection) -> None:
                CASE
                    WHEN read_path = 'recreate'
                        THEN 'derived object: rebuild from its definition'
+                   WHEN read_path = 'unknown'
+                       THEN 'UniForm unknown: table_details not complete'
                    WHEN read_path = 'enable_uniform_or_copy'
                        THEN 'managed Delta without UniForm: enable Iceberg reads or copy'
-                   WHEN details_extract_status <> 'complete' AND fmt = 'DELTA'
-                       THEN 'UniForm unknown: table_details not complete'
                    WHEN storage_scheme IN ('abfss', 'gs', 'wasbs')
                        THEN 'storage on ' || storage_scheme || ': cross-cloud read'
                END AS note,
@@ -207,13 +210,32 @@ def _build_collection_warnings(con: duckdb.DuckDBPyConnection) -> None:
                    {cols_col}::VARCHAR AS columns, '{detail}' AS detail
             FROM raw.{source}
         """)
+    # One line saying which workspaces spend, queries and jobs cover.
+    if table_exists(con, "raw", "workspaces"):
+        con.execute("""
+            INSERT INTO report.collection_warnings BY NAME
+            SELECT any_value(collection_id) AS collection_id,
+                   'workspace_scope' AS warning,
+                   'spend, queries and jobs cover ' || count(*) || ' workspace(s): '
+                   || string_agg(coalesce(workspace_name, '?') || ' (' || workspace_id || ')', ', '
+                                 ORDER BY workspace_id)
+                   || '. Set DATABRICKS_WORKSPACES to change this.' AS detail
+            FROM raw.workspaces
+            HAVING count(*) > 0
+        """)
 
 
 # ── workload facts in the neutral report shapes the Dive reads ────────────
 # Same relation names and columns as the Snowflake adapter so the existing
 # dashboard renders a Databricks collection unchanged. "warehouse_name" is
-# the SQL warehouse name when the work ran on one, else the compute type
-# (SERVERLESS_COMPUTE, CLUSTER, ...). Databricks "credits" are DBUs.
+# the SQL warehouse name when the work ran on one, "serverless compute" for
+# serverless jobs and notebooks, else the billing product or compute type. Databricks "credits" are DBUs.
+
+
+# Serverless jobs and notebooks show up in billing by product and in query
+# history as SERVERLESS_COMPUTE. Both get this one name so the Dive's
+# warehouse filter matches across the spend and workload panels.
+_SERVERLESS = "serverless compute"
 
 
 def _status(con: duckdb.DuckDBPyConnection, extractor: str) -> str:
@@ -256,7 +278,10 @@ def _build_spend_profile(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(f"""
         INSERT INTO report.spend_profile BY NAME
         SELECT x.collection_id AS collection_id,
-               coalesce({name}, x.warehouse_id, lower(x.billing_origin_product)) AS warehouse_name,
+               coalesce({name}, x.warehouse_id,
+                        CASE WHEN x.is_serverless AND x.billing_origin_product IN ('JOBS', 'INTERACTIVE', 'ALL_PURPOSE')
+                             THEN '{_SERVERLESS}' END,
+                        lower(x.billing_origin_product)) AS warehouse_name,
                x.usage_date AS usage_date,
                sum(x.usage_quantity)::DOUBLE AS credits_used,
                sum(x.usage_quantity)::DOUBLE AS credits_used_compute,
@@ -298,7 +323,9 @@ def _build_workload_rollup(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(f"""
         INSERT INTO report.workload_rollup BY NAME
         SELECT x.collection_id AS collection_id,
-               coalesce({name}, x.warehouse_id, x.compute_type, 'unknown') AS warehouse_name,
+               coalesce({name}, x.warehouse_id,
+                        CASE WHEN x.compute_type = 'SERVERLESS_COMPUTE' THEN '{_SERVERLESS}' END,
+                        x.compute_type, 'unknown') AS warehouse_name,
                coalesce(x.statement_type, 'OTHER') AS query_type,
                x.usage_date AS usage_date,
                x.n_queries::BIGINT AS n_queries, x.n_succeeded::BIGINT AS n_succeeded,

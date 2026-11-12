@@ -20,4 +20,5 @@ LEFT JOIN system.billing.list_prices p
     AND u.usage_end_time >= p.price_start_time
     AND (p.price_end_time IS NULL OR u.usage_end_time < p.price_end_time)
 WHERE u.usage_date >= CAST(current_timestamp() - INTERVAL {window_days} DAYS AS DATE)
+{workspace_filter:u}
 GROUP BY 1, 2, 3, 4, 5, 6, 7

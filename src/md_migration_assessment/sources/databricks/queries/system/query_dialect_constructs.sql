@@ -24,5 +24,6 @@ SELECT
     count_if(statement_type IN ('OPTIMIZE', 'VACUUM')) AS n_delta_maintenance
 FROM system.query.history
 WHERE start_time >= current_timestamp() - INTERVAL {window_days} DAYS
+{workspace_filter}
 AND statement_text IS NOT NULL
 GROUP BY 1

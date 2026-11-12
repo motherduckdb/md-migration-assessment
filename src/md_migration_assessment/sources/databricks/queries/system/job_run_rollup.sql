@@ -13,4 +13,5 @@ SELECT
     sum(unix_timestamp(period_end_time) - unix_timestamp(period_start_time)) AS sum_run_seconds
 FROM system.lakeflow.job_run_timeline
 WHERE period_start_time >= current_timestamp() - INTERVAL {window_days} DAYS
+{workspace_filter}
 GROUP BY 1, 2, 3, 4

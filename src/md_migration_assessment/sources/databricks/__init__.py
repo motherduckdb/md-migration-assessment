@@ -45,6 +45,8 @@ GRAMMAR = ScopeGrammar(
 class DatabricksAdapter:
     """What the collector needs from Databricks: extracts, scope rules, signals and report facts."""
     name: str = "databricks"
+    display_name: str = "Databricks"
+    deployment_noun: str = "Databricks workspace"
     raw_schema_version: int = RAW_SCHEMA_VERSION
     extractors: list = field(default_factory=lambda: EXTRACTORS)
     scope: ScopeGrammar = GRAMMAR

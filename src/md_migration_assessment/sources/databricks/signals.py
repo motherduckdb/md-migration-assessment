@@ -160,7 +160,8 @@ SIGNALS: list[Signal] = [
             "SELECT coalesce(round(sum(usage_quantity)), 0)::BIGINT AS n,\n"
             "       coalesce(list(DISTINCT billing_origin_product ORDER BY billing_origin_product), [])\n"
             "           AS sample_objects\n"
-            "FROM raw.billing_usage_daily WHERE collection_id = '{cid}'"
+            "FROM raw.billing_usage_daily WHERE collection_id = '{cid}'\n"
+            "  AND upper(coalesce(usage_unit, 'DBU')) = 'DBU'"  # same unit filter as spend_profile
         ),
     ),
     Signal(

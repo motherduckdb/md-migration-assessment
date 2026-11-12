@@ -31,15 +31,8 @@ from ...collect.extractor import extractor_version as _neutral_version
 from ...privacy import PrivacyClass
 
 # Version of the raw.* table shapes. Bump on any extract column change.
-# v1: catalog inventory (information_schema walk + metastore objects) and
-#   DESCRIBE DETAIL table details.
-# v2: query_workload_rollup (system.query.history aggregate, standard) and
-#   hive_metastore_tables (SHOW TABLES walk of the legacy Hive metastore).
-#   v2 also adds the system-table extracts (compute, billing, lakeflow,
-#   lineage, serving, audit, predictive optimization) and grants_summary.
-# v3: job_tasks (Jobs API task definitions: task type, notebook language,
-#   compute kind, library kinds, trigger; no code, paths or parameters).
-RAW_SCHEMA_VERSION = 3
+# v1: first release of the Databricks adapter.
+RAW_SCHEMA_VERSION = 1
 
 #: meta.extract_runs.source_used labels for this adapter's strategies.
 INFORMATION_SCHEMA = "information_schema"
@@ -277,6 +270,11 @@ EXTRACTORS: list[Extractor] = [
     }),
     _metastore("grants_summary", {}),
     # ── standard profile: system tables (need explicit grants) ─────────
+    # Which workspaces this collection covers (see DATABRICKS_WORKSPACES).
+    _system("workspaces", "system.access.workspaces_latest", {
+        "workspace_name": PrivacyClass.OBJECT_NAME,
+        "workspace_url": PrivacyClass.OBJECT_NAME,
+    }, category="platform", window=False),
     _system("warehouses", "system.compute.warehouses", {
         "warehouse_id": PrivacyClass.OBJECT_NAME,
         "warehouse_name": PrivacyClass.OBJECT_NAME,

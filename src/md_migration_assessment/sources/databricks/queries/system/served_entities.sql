@@ -11,4 +11,5 @@ SELECT
     change_time AS change_time,
     endpoint_delete_time AS endpoint_delete_time
 FROM system.serving.served_entities
-QUALIFY row_number() OVER (PARTITION BY served_entity_id ORDER BY change_time DESC) = 1
+WHERE true {workspace_filter}
+QUALIFY row_number() OVER (PARTITION BY workspace_id, served_entity_id ORDER BY change_time DESC) = 1

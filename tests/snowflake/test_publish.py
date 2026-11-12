@@ -66,6 +66,8 @@ class FakeMotherDuck:
             self.database_exists = False
         elif "MD_LIST_DIVES" in up:
             self._last = [(d,) for d in self.existing_dives]
+        elif "FROM DUCKDB_TABLES()" in up:
+            self._last = [("raw", "gone_table"), ("report", "feature_inventory")]
         elif "MD_CREATE_DIVE" in up:
             self._last = [("11111111-2222-4333-8444-555555555555",)]
         else:
@@ -138,8 +140,16 @@ def test_publish_refuses_existing_database_unless_replace(assessed_db, dive_tsx,
 
     fake = FakeMotherDuck(database_exists=True)
     result = _publish(assessed_db, dive_tsx, tmp_path / "again", fake, database="md_assessment_x", replace=True)
-    ops = [" ".join(s.split(" ")[:2]) for s in fake.statements if s.startswith(("CREATE DATABASE", "DROP DATABASE"))]
-    assert ops == ["CREATE DATABASE", "DROP DATABASE", "CREATE DATABASE"]
+    # Replace refreshes the tables in place: dropping the database would fail
+    # (or delete its shares), so it is never dropped.
+    assert not any(s.startswith("DROP DATABASE") for s in fake.statements)
+    replaced = [s for s in fake.statements if s.startswith("CREATE OR REPLACE TABLE")]
+    assert replaced and all(s.startswith('CREATE OR REPLACE TABLE "md_assessment_x".') for s in replaced)
+    assert any('"report"."feature_inventory"' in s for s in replaced)
+    assert fake.statements.index("BEGIN TRANSACTION") < fake.statements.index("COMMIT")
+    assert fake.statements[fake.statements.index("COMMIT") + 1] == "DETACH md_assess_handoff"
+    # a table the new handoff no longer has is dropped
+    assert 'DROP TABLE "md_assessment_x"."raw"."gone_table"' in fake.statements
     assert result.database == "md_assessment_x"
 
 
