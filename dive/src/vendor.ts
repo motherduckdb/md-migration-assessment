@@ -4,6 +4,7 @@ import { createContext, createElement, useContext, type ReactNode } from 'react'
 import { S } from './format';
 
 export type Vendor = {
+  kind: 'snowflake' | 'databricks';
   name: string;
   account: string;
   credits: string;
@@ -13,6 +14,7 @@ export type Vendor = {
 };
 
 const SNOWFLAKE: Vendor = {
+  kind: 'snowflake',
   name: 'Snowflake',
   account: 'Snowflake account',
   credits: 'Credits are Snowflake credits (no rate is recorded, so no dollar figure is implied)',
@@ -22,6 +24,7 @@ const SNOWFLAKE: Vendor = {
 };
 
 const DATABRICKS: Vendor = {
+  kind: 'databricks',
   name: 'Databricks',
   account: 'Databricks workspace',
   credits: 'Credits are Databricks DBUs from system.billing (list price is kept in report.spend_profile.list_cost, never the negotiated rate)',
