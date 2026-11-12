@@ -188,10 +188,11 @@ AGGREGATE_SENSITIVE_COLUMNS: dict[str, PrivacyClass] = {
 #: strings from the fact builders and stay labels.
 AGGREGATE_TABLE_SENSITIVE_COLUMNS: dict[str, dict[str, PrivacyClass]] = {
     "report.feature_inventory": {"note": PrivacyClass.COMMENT},
-    # Databricks governance warnings: policy function and column names
+    # Databricks warnings: policy function, column and workspace names
     "report.collection_warnings": {
         "policy_function": PrivacyClass.OBJECT_NAME,
         "columns": PrivacyClass.OBJECT_NAME,
+        "workspaces": PrivacyClass.OBJECT_NAME,
     },
 }
 

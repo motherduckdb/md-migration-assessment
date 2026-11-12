@@ -652,7 +652,8 @@ def _run_command(
             run.status = "partial"
             run.error_category = "error"
             run.error_detail = _join_notes(
-                "command output truncated at the server-side row cap — "
+                "command output truncated at a server-side cap, or part of it "
+                "could not be read — "
                 "inventory may be incomplete",
                 visibility,
             )

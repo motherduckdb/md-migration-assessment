@@ -97,8 +97,6 @@ def connect_motherduck(token: str | None = None) -> duckdb.DuckDBPyConnection:
     return duckdb.connect("md:", config={"motherduck_token": resolve_token(token)})
 
 
-
-
 def _collection_facts(db_path: Path) -> dict[str, Any]:
     con = duckdb.connect(str(db_path), read_only=True)
     try:
@@ -150,26 +148,40 @@ def _replace_in_place(con: Connection, database: str, handoff: Path, *, log: lis
     Dropping it would fail (or, with CASCADE, delete them) when the database
     has shares, and a Flight that refreshes a shared database must keep them.
     So the handoff is attached read-only, every table is replaced in one
-    transaction, and tables the new handoff no longer has are dropped.
+    transaction, and tables the new handoff no longer has are dropped, along
+    with any schema that this leaves empty.
     """
     db = sql_ident(database)
     src = "md_assess_handoff"
     tables = _handoff_tables(handoff)
     wanted = {(s.lower(), t.lower()) for s, t in tables}
+    wanted_schemas = {s.lower() for s, _ in tables}
     attach = f"ATTACH {sql_literal(str(handoff))} AS {src} (READ_ONLY)"
     log.append(attach)
     con.execute(attach)
     try:
-        existing_sql = (f"SELECT schema_name, table_name FROM duckdb_tables() "
-                        f"WHERE database_name = {sql_literal(database)}")
+        # Catalog names match case-insensitively, so the lookup must too, or a
+        # --name in another case would leave stale tables behind.
+        in_db = f"lower(database_name) = lower({sql_literal(database)})"
+        existing_sql = f"SELECT schema_name, table_name FROM duckdb_tables() WHERE {in_db}"
         log.append(existing_sql)
         existing = con.execute(existing_sql).fetchall() or []
+        views_sql = f"SELECT DISTINCT schema_name FROM duckdb_views() WHERE {in_db} AND NOT internal"
+        log.append(views_sql)
+        schemas_with_views = {r[0].lower() for r in (con.execute(views_sql).fetchall() or [])}
+        stale = [(s, t) for s, t in existing if (s.lower(), t.lower()) not in wanted]
+        # A schema the handoff no longer has is dropped once its tables are,
+        # unless something else (a view) still lives in it.
+        empty_schemas = sorted({s for s, _ in stale
+                                if s.lower() not in wanted_schemas
+                                and s.lower() not in schemas_with_views
+                                and s.lower() != "main"})
         steps = ["BEGIN TRANSACTION"]
         steps += [f"CREATE SCHEMA IF NOT EXISTS {db}.{sql_ident(s)}" for s in sorted({s for s, _ in tables})]
         steps += [f"CREATE OR REPLACE TABLE {db}.{sql_ident(s)}.{sql_ident(t)} AS "
                   f"FROM {src}.{sql_ident(s)}.{sql_ident(t)}" for s, t in tables]
-        steps += [f"DROP TABLE {db}.{sql_ident(s)}.{sql_ident(t)}"
-                  for s, t in existing if (s.lower(), t.lower()) not in wanted]
+        steps += [f"DROP TABLE {db}.{sql_ident(s)}.{sql_ident(t)}" for s, t in stale]
+        steps += [f"DROP SCHEMA {db}.{sql_ident(s)}" for s in empty_schemas]
         steps.append("COMMIT")
         for step in steps:
             log.append(step)
@@ -177,7 +189,10 @@ def _replace_in_place(con: Connection, database: str, handoff: Path, *, log: lis
                 con.execute(step)
             except Exception:
                 if step != "BEGIN TRANSACTION":
-                    con.execute("ROLLBACK")
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:  # noqa: BLE001 - keep the error that caused it
+                        pass
                 raise
     finally:
         log.append(f"DETACH {src}")

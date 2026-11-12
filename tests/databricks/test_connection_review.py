@@ -235,6 +235,23 @@ def test_job_task_rows_looks_up_each_path_once():
     assert calls == ["/same"] and capped is False and len(rows) == 5
 
 
+
+def test_failed_notebook_lookup_marks_rows_incomplete_without_the_path():
+    """A get-status call that fails (e.g. no access) marks the extract partial, not complete."""
+    jobs = [_nb_job(1, "/secret/team/nb"), _nb_job(2, "/secret/team/nb"), _nb_job(3, "/ok")]
+
+    def lookup(path):
+        if path.startswith("/secret"):
+            raise RuntimeError("PERMISSION_DENIED: /secret/team/nb")
+        return "SQL"
+
+    rows, incomplete = job_task_rows(jobs, lookup, 10)
+    assert incomplete is True
+    errors = [r["list_error"] for r in rows]
+    assert errors == ["notebook language lookup failed"] * 2 + [None]
+    assert not any("/secret" in str(v) for r in rows for v in r.values())
+    assert [r["file_language"] for r in rows] == [None, None, "sql"]
+
 # 5. per-job task pagination --------------------------------------------------
 
 

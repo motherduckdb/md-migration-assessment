@@ -176,7 +176,7 @@ DROP TABLE IF EXISTS report.collection_warnings;
 CREATE TABLE report.collection_warnings (
     collection_id UUID, warning VARCHAR, table_catalog VARCHAR,
     table_schema VARCHAR, table_name VARCHAR, policy_function VARCHAR,
-    columns VARCHAR, detail VARCHAR
+    columns VARCHAR, detail VARCHAR, workspaces VARCHAR
 );
 """
 
@@ -216,10 +216,13 @@ def _build_collection_warnings(con: duckdb.DuckDBPyConnection) -> None:
             INSERT INTO report.collection_warnings BY NAME
             SELECT any_value(collection_id) AS collection_id,
                    'workspace_scope' AS warning,
-                   'spend, queries and jobs cover ' || count(*) || ' workspace(s): '
-                   || string_agg(coalesce(workspace_name, '?') || ' (' || workspace_id || ')', ', '
-                                 ORDER BY workspace_id)
-                   || '. Set DATABRICKS_WORKSPACES to change this.' AS detail
+                   'spend, queries and jobs cover ' || count(*) || ' workspace(s). '
+                   || 'Set DATABRICKS_WORKSPACES to change this.' AS detail,
+                   -- workspace names are object names: their own column, so
+                   -- the handoff classifies them instead of passing them as a label
+                   string_agg(coalesce(workspace_name, '?') || ' ('
+                              || coalesce(workspace_id, '?') || ')', ', '
+                              ORDER BY workspace_id) AS workspaces
             FROM raw.workspaces
             HAVING count(*) > 0
         """)

@@ -23,7 +23,7 @@ import { WorkloadPanel } from './panels/workload';
 import { ConcurrencyPanel } from './panels/concurrency';
 import { RiskPanel } from './panels/risk';
 import { IngestionPanel } from './panels/ingestion';
-import { CSS, Skeleton, Warn } from './ui';
+import { CSS, ErrorNote, Skeleton, Warn } from './ui';
 import { VendorProvider, useCollectionRow, useVendor } from './vendor';
 
 // `md-assess publish` rewrites the path to the uploaded database; the alias is
@@ -76,7 +76,23 @@ function MultiSelect({ label, options, value, onChange }: { label: string; optio
 // Resolve the vendor once here; render nothing vendor-specific until the collection row is known.
 export default function AssessmentDashboard() {
   const coll = useSQLQuery(Q.collection());
-  if (coll.isLoading && !coll.data) {
+  const row = (Array.isArray(coll.data) ? coll.data : [])[0];
+  // Without the collection row the source is unknown: show the error rather
+  // than rendering every panel with one vendor's wording guessed.
+  if (coll.isError || (!coll.isLoading && !row)) {
+    return (
+      <div className="mda" style={{ background: BG, padding: '16px 20px 40px', minHeight: '100%' }}>
+        <style>{CSS}</style>
+        <h1 style={{ fontSize: 22, margin: '4px 0 6px', fontWeight: 600 }}>Migration assessment</h1>
+        {coll.isError ? (
+          <ErrorNote error={coll.error} />
+        ) : (
+          <p style={{ color: MUTED }}>No collection found in meta.collections, so there is nothing to show.</p>
+        )}
+      </div>
+    );
+  }
+  if (!row) {
     return (
       <div className="mda" style={{ background: BG, padding: '16px 20px 40px', minHeight: '100%' }}>
         <style>{CSS}</style>
@@ -84,7 +100,6 @@ export default function AssessmentDashboard() {
       </div>
     );
   }
-  const row = (Array.isArray(coll.data) ? coll.data : [])[0] ?? {};
   return (
     <VendorProvider row={row}>
       <Dashboard />

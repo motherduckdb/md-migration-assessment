@@ -750,6 +750,18 @@ def test_report_says_which_workspaces_it_covers(out_db):
     run_collection(out_db, ADAPTER, FakeDatabricks(workspace_ids=("1",)), profile=Profile.STANDARD)
     build_report(out_db)
     rows = out_db.execute(
-        "SELECT detail FROM report.collection_warnings WHERE warning = 'workspace_scope'"
+        "SELECT detail, workspaces FROM report.collection_warnings "
+        "WHERE warning = 'workspace_scope'"
     ).fetchall()
-    assert len(rows) == 1 and "lab (1)" in rows[0][0]
+    assert len(rows) == 1 and "1 workspace(s)" in rows[0][0]
+    # the names sit in their own column, never in the label column
+    assert "lab" not in rows[0][0] and rows[0][1] == "lab (1)"
+
+
+def test_workspace_names_are_disclosed_as_object_names(out_db):
+    """Workspace names in collection_warnings are classified, not passed through as labels."""
+    from md_migration_assessment.handoff import classify_aggregate_columns
+
+    disclosed, unclassified = classify_aggregate_columns(
+        "report.collection_warnings", ["warning", "detail", "workspaces"])
+    assert unclassified == [] and "workspaces" in disclosed["object_name"]

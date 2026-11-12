@@ -301,11 +301,15 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
     (PYTHON/SQL/SCALA/R) or None; it is called at most ``cap`` times. Paths,
     task keys, parameters and code never reach a row: only the task type,
     language, compute kind, Spark version, library kinds and trigger.
+
+    The flag is True when the rows are incomplete: the lookup cap was hit, or
+    a lookup failed (that task's ``list_error`` says so, without the path).
     """
     rows: list[dict] = []
     lookups = 0
-    lookups_capped = False
+    incomplete = False
     seen: dict[str, str | None] = {}  # each notebook path is looked up once
+    failed: set[str] = set()  # paths whose lookup raised
     for job in jobs:
         settings = job.get("settings") or {}
         trigger, paused = _trigger_kind(settings)
@@ -324,6 +328,7 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
                 "notebook", "spark_python", "dbt", "sql") else
                 "WORKSPACE" if ttype in ("notebook", "spark_python") else None)
             language = None
+            list_error = None
             if ttype == "notebook":
                 path = body.get("notebook_path")
                 language = _language_from_path(path)
@@ -336,9 +341,14 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
                             language = notebook_language(path)
                         except Exception:  # noqa: BLE001 - one notebook must not sink the rest
                             language = None
+                            failed.add(path)
                         seen[path] = language
                     else:
-                        lookups_capped = True
+                        incomplete = True
+                    if path in failed:
+                        # no exception text: it can carry the notebook path
+                        list_error = "notebook language lookup failed"
+                        incomplete = True
             elif ttype in ("spark_python", "python_wheel", "python_operator"):
                 language = "python"
             elif ttype in ("spark_jar",):
@@ -363,8 +373,9 @@ def job_task_rows(jobs, notebook_language, cap: int) -> tuple[list[dict], bool]:
                          "in_for_each": in_each, "code_source": source,
                          "file_language": language.lower() if language else None,
                          "compute_kind": compute, "spark_version": spark,
-                         "library_kinds": ",".join(kinds) or None, "list_error": None})
-    return rows, lookups_capped
+                         "library_kinds": ",".join(kinds) or None,
+                         "list_error": list_error})
+    return rows, incomplete
 
 
 def job_tasks_table(rows: list[dict]) -> pa.Table:
