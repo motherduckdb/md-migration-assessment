@@ -120,10 +120,10 @@ class SourceAdapter(Protocol):
 
     #: registry key and ``meta.collections.source_kind`` value
     name: str
-    #: product name for titles and descriptions, e.g. ``"Snowflake"``
-    display_name: str
-    #: what one deployment is called, e.g. ``"Snowflake account"``
-    deployment_noun: str
+    # Optional, so adapters written for 0.1.5 still match this protocol;
+    # publish falls back when they are missing:
+    #   display_name: product name for titles, e.g. "Snowflake"
+    #   deployment_noun: what one deployment is called, e.g. "Snowflake account"
     #: version of this adapter's raw.* table shapes (bump on any extract
     #: column change; recorded per collection, checked by report/handoff)
     raw_schema_version: int

@@ -261,10 +261,10 @@ def publish(
         raise ValueError(f"database name {database!r} must be an identifier ([A-Za-z_][A-Za-z0-9_]*)")
     where = " · ".join(x for x in (facts["deployment"], facts["region"]) if x)
     adapter = get_adapter(facts["source_kind"] or "snowflake")
-    default_title = TITLE_TEMPLATE.format(source=adapter.display_name)
+    default_title = TITLE_TEMPLATE.format(source=getattr(adapter, "display_name", adapter.name.title()))
     title = title or (f"{default_title} · {facts['deployment']}" if facts["deployment"] else default_title)
     description = (
-        f"Read-only dashboard over the md-assess {facts['tool_version']} handoff of {adapter.deployment_noun} "
+        f"Read-only dashboard over the md-assess {facts['tool_version']} handoff of {getattr(adapter, 'deployment_noun', adapter.name.title() + ' deployment')} "
         f"{where or '(not recorded)'}, collected {facts['collected']}. Facts and coverage only: "
         "no source bodies or query text were uploaded."
     )

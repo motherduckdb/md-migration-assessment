@@ -634,6 +634,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "pyarrow", version = "23.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
+    { name = "pytz" },
     { name = "typer" },
 ]
 
@@ -666,6 +667,7 @@ requires-dist = [
     { name = "md-migration-assessment", extras = ["snowflake"], marker = "extra == 'dev'" },
     { name = "pyarrow", specifier = ">=16" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pytz" },
     { name = "snowflake-connector-python", extras = ["pandas"], marker = "extra == 'snowflake'", specifier = ">=4.7.1" },
     { name = "typer", specifier = ">=0.12" },
 ]
