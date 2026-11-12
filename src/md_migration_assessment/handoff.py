@@ -218,6 +218,7 @@ AGGREGATE_TABLE_LABEL_COLUMNS: dict[str, frozenset[str]] = {
         {"data_source_format", "uniform_formats", "storage_scheme", "read_path"}),
     "report.sizing": frozenset({"data_source_format"}),
     "report.spend_profile": frozenset({"billing_origin_product"}),
+    "report.spend_by_layer": frozenset({"billing_origin_product", "layer", "method"}),
 }
 _LABEL_SUFFIXES = ("_extract_status",)
 

@@ -298,6 +298,146 @@ def _build_spend_profile(con: duckdb.DuckDBPyConnection) -> None:
     """)
 
 
+# ── spend by layer ────────────────────────────────────────────────────────
+# DBUs and list cost split across the layers a migration plan sizes:
+# ingestion, transformation, BI serving, interactive, ML/AI and platform.
+# Each billing_origin_product maps to one layer (method 'billed': the DBUs
+# are billed facts, only the layer label is ours). Values are the documented
+# system.billing.usage products (docs.databricks.com, admin/system-tables/billing).
+#
+# DLT (Lakeflow pipelines) is put under ingestion: pipelines are mostly the
+# streaming / bronze landing path, and billing does not say which pipeline
+# step did what. Pipelines that only transform are under-counted as
+# transformation; this is documented in the row note.
+
+_LAYER_PRODUCTS: dict[str, tuple[str, ...]] = {
+    "ingestion": ("DLT", "LAKEFLOW_CONNECT"),
+    "transformation": ("JOBS",),
+    "bi_serving": ("SQL",),
+    "interactive": ("ALL_PURPOSE", "INTERACTIVE", "NOTEBOOKS"),
+    "ml_ai": (
+        "MODEL_SERVING", "VECTOR_SEARCH", "AI_FUNCTIONS", "AI_GATEWAY", "AI_RUNTIME",
+        "GENIE", "FOUNDATION_MODEL_TRAINING", "AGENT_EVALUATION", "AGENT_BRICKS",
+        "SUPERVISOR_AGENT", "ONLINE_TABLES", "FEATURE_STORE",
+    ),
+    # Everything else is platform: background services, storage, networking,
+    # governance, apps and databases. Listed so "known platform" and "not in
+    # the map" can be told apart in the note.
+    "platform": (
+        "PREDICTIVE_OPTIMIZATION", "LAKEHOUSE_MONITORING", "DATA_QUALITY_MONITORING",
+        "DATA_CLASSIFICATION", "DEFAULT_STORAGE", "NETWORKING", "BASE_ENVIRONMENTS",
+        "FINE_GRAINED_ACCESS_CONTROL", "EXTERNAL_COMPATIBILITY", "DATA_SHARING",
+        "CLEAN_ROOM", "APPS", "DATABASE", "LAKEBASE", "LAKEHOUSE_REAL_TIME",
+        "DISASTER_RECOVERY",
+    ),
+}
+
+#: product → layer, the deterministic map the SQL CASE is built from.
+LAYER_OF_PRODUCT: dict[str, str] = {
+    p: layer for layer, products in _LAYER_PRODUCTS.items() for p in products
+}
+
+#: Databricks query.history statement types that write data. On a SQL
+#: warehouse their share of elapsed time is the transformation estimate.
+_WRITE_STATEMENTS = (
+    "INSERT", "MERGE", "UPDATE", "DELETE", "COPY", "CREATE", "CREATE_TABLE_AS_SELECT",
+    "REPLACE", "REFRESH", "TRUNCATE",
+)
+
+_LAYER_DDL = """
+CREATE SCHEMA IF NOT EXISTS report;
+DROP TABLE IF EXISTS report.spend_by_layer;
+CREATE TABLE report.spend_by_layer (
+    collection_id UUID, usage_date DATE, layer VARCHAR,
+    billing_origin_product VARCHAR, dbus DOUBLE, list_cost DOUBLE,
+    method VARCHAR, extract_status VARCHAR, note VARCHAR
+);
+"""
+
+_UNMAPPED_NOTE = "product not in the layer map: counted as platform"
+_DLT_NOTE = "Lakeflow pipelines counted as ingestion; pipelines that only transform are not split out"
+_SPLIT_NOTE = ("SQL warehouse DBUs split by share of elapsed time in write statements "
+               "(transformation) vs the rest (BI serving), per warehouse and day")
+
+
+def _sql_list(values) -> str:
+    return "(" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
+def _layer_case(col: str) -> str:
+    whens = " ".join(
+        f"WHEN {col} IN {_sql_list(products)} THEN '{layer}'"
+        for layer, products in _LAYER_PRODUCTS.items()
+    )
+    return f"CASE {whens} ELSE 'platform' END"
+
+
+def _build_spend_by_layer(con: duckdb.DuckDBPyConnection) -> None:
+    """Daily DBUs and list cost per layer and product. Rows in other units are left out.
+
+    The product map is a billed fact ('billed'). When the query workload
+    rollup is complete, SQL warehouse DBUs are further split between BI
+    serving and transformation by each warehouse's daily share of elapsed
+    time in write statements ('estimated').
+    """
+    con.execute(_LAYER_DDL)
+    if not table_exists(con, "raw", "billing_usage_daily"):
+        return
+    product = "upper(coalesce(x.billing_origin_product, 'UNKNOWN'))"
+    # Split shares only from a complete rollup: a partial one would skew them.
+    if table_exists(con, "raw", "query_workload_rollup"):
+        shares = f"""
+            SELECT q.collection_id, q.warehouse_id, q.usage_date,
+                   sum(q.sum_duration_ms) FILTER (
+                       WHERE upper(q.statement_type) IN {_sql_list(_WRITE_STATEMENTS)}
+                   )::DOUBLE / sum(q.sum_duration_ms) AS write_share
+            FROM raw.query_workload_rollup q
+            JOIN meta.extract_runs r ON r.collection_id = q.collection_id
+                AND r.extractor = 'query_workload_rollup' AND r.status = 'complete'
+            WHERE q.warehouse_id IS NOT NULL
+            GROUP BY 1, 2, 3
+            HAVING sum(q.sum_duration_ms) > 0
+        """
+    else:
+        shares = ("SELECT CAST(NULL AS UUID) AS collection_id, CAST(NULL AS VARCHAR) AS warehouse_id, "
+                  "CAST(NULL AS DATE) AS usage_date, CAST(NULL AS DOUBLE) AS write_share WHERE false")
+    con.execute(f"""
+        INSERT INTO report.spend_by_layer BY NAME
+        WITH base AS (
+            SELECT x.collection_id, x.usage_date, {product} AS product,
+                   {_layer_case(product)} AS layer,
+                   x.usage_quantity::DOUBLE AS dbus, x.list_cost::DOUBLE AS list_cost,
+                   nullif(s.write_share, 0) AS share,  -- no writes: plain billed BI serving
+                   {_status(con, 'billing_usage_daily')} AS extract_status
+            FROM raw.billing_usage_daily x
+            LEFT JOIN ({shares}) s
+                ON {product} = 'SQL' AND s.collection_id = x.collection_id
+                AND s.warehouse_id = x.warehouse_id AND s.usage_date = x.usage_date
+            WHERE upper(coalesce(x.usage_unit, 'DBU')) = 'DBU'
+        ), parts AS (
+            SELECT collection_id, usage_date, product, layer,
+                   dbus * (1 - coalesce(share, 0)) AS dbus,
+                   list_cost * (1 - coalesce(share, 0)) AS list_cost,
+                   CASE WHEN share IS NULL THEN 'billed' ELSE 'estimated' END AS method,
+                   extract_status
+            FROM base WHERE coalesce(share, 0) < 1
+            UNION ALL
+            SELECT collection_id, usage_date, product, 'transformation',
+                   dbus * share, list_cost * share, 'estimated', extract_status
+            FROM base WHERE share IS NOT NULL
+        )
+        SELECT collection_id, usage_date, layer, product AS billing_origin_product,
+               sum(dbus) AS dbus, sum(list_cost) AS list_cost, method,
+               any_value(extract_status) AS extract_status,
+               CASE WHEN method = 'estimated' THEN '{_SPLIT_NOTE}'
+                    WHEN product = 'DLT' THEN '{_DLT_NOTE}'
+                    WHEN product NOT IN {_sql_list(LAYER_OF_PRODUCT)} THEN '{_UNMAPPED_NOTE}'
+               END AS note
+        FROM parts
+        GROUP BY collection_id, usage_date, layer, product, method
+    """)
+
+
 _ROLLUP_DDL = """
 CREATE SCHEMA IF NOT EXISTS report;
 DROP TABLE IF EXISTS report.workload_rollup;
@@ -542,6 +682,7 @@ FACT_BUILDERS = (
     _build_readable_in_place,
     _build_collection_warnings,
     _build_spend_profile,
+    _build_spend_by_layer,
     _build_workload_rollup,
     _build_concurrency_profile,
     _build_tool_fingerprints,

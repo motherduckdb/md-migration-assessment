@@ -107,6 +107,22 @@ export const spendDaily = (f: Filters) => `
   WHERE 1 = 1${whClause(f)}
   GROUP BY 1, 2 ORDER BY 1, 2`;
 
+// ── 2b. spend by layer (Databricks only) ─────────────────────────────────────
+// report.spend_by_layer exists only for Databricks collections, so the panel
+// first asks whether the table is there before querying it.
+
+export const spendByLayerExists = () => `
+  SELECT count(*) AS n FROM information_schema.tables
+  WHERE table_catalog = 'assessment' AND table_schema = 'report' AND table_name = 'spend_by_layer'`;
+
+export const spendByLayer = (f: Filters) => `
+  SELECT layer, method, sum(dbus) AS dbus, sum(list_cost) AS list_cost,
+         string_agg(DISTINCT billing_origin_product, ', ' ORDER BY billing_origin_product) AS products,
+         string_agg(DISTINCT extract_status, ', ') AS extract_status
+  FROM ${R('spend_by_layer')}
+  WHERE 1 = 1${dateClause(f)}
+  GROUP BY 1, 2 ORDER BY 1, 2`;
+
 // ── 3. workload profile ───────────────────────────────────────────────────────
 
 export const QUERY_CLASS_SQL = `CASE
@@ -188,6 +204,7 @@ export const ALL_QUERIES = (f: Filters = EMPTY_FILTERS): Record<string, string> 
   storageByDatabase: storageByDatabase(f),
   storageBySchema: storageBySchema(f),
   spendDaily: spendDaily(f),
+  spendByLayerExists: spendByLayerExists(),
   workloadPoints: workloadPoints(f),
   concurrencyHour: concurrency(f, 'hour'),
   concurrencyDay: concurrency(f, 'day'),

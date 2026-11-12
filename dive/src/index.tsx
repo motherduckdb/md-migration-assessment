@@ -19,6 +19,7 @@ import type { Filters } from './queries';
 import { CoverageStrip } from './coverage';
 import { StoragePanel } from './panels/storage';
 import { SpendPanel, type DateRange } from './panels/spend';
+import { SpendByLayerPanel } from './panels/layers';
 import { WorkloadPanel } from './panels/workload';
 import { ConcurrencyPanel } from './panels/concurrency';
 import { RiskPanel } from './panels/risk';
@@ -177,6 +178,7 @@ function Dashboard() {
         <main style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <StoragePanel filters={filters} drill={drill} setDrill={(v) => setDrill(v ?? undefined)} />
           <SpendPanel filters={filters} warehouses={warehouses} color={color} range={range} setRange={(r) => setRange(r ?? undefined)} />
+          {vendor.kind === 'databricks' ? <SpendByLayerPanel filters={filters} /> : null}
           <WorkloadPanel filters={filters} color={color} />
           <ConcurrencyPanel filters={filters} warehouses={warehouses} color={color} windowDays={windowDays} />
           <RiskPanel />
