@@ -43,7 +43,7 @@ a release notes a schema change. See [Support](SUPPORT.md) and
 ## Quickstart: Snowflake (local mode)
 
 Requires Python 3.10+. Fill in the `<...>` values, then the whole block runs
-as-is. This installs the versioned `v0.1.5` GitHub release asset rather than
+as-is. This installs the versioned `v0.2.0` GitHub release asset rather than
 the moving `main` branch:
 
 ```bash
@@ -51,7 +51,7 @@ the moving `main` branch:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Install the collector as a CLI tool, with the Snowflake client extra
-uv tool install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.5/md_migration_assessment-0.1.5-py3-none-any.whl"
+uv tool install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.2.0/md_migration_assessment-0.2.0-py3-none-any.whl"
 
 # 3. Snowflake connection — external-browser SSO is the recommended default
 export SNOWFLAKE_ACCOUNT="<orgname-accountname>"   # e.g. myorg-myaccount
@@ -76,9 +76,9 @@ shell history or checked-in environment files.
 Without uv, any of these work in its place:
 
 ```bash
-pipx install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.5/md_migration_assessment-0.1.5-py3-none-any.whl"
+pipx install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.2.0/md_migration_assessment-0.2.0-py3-none-any.whl"
 # or, into an existing virtualenv:
-pip install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.1.5/md_migration_assessment-0.1.5-py3-none-any.whl"
+pip install "md-migration-assessment[snowflake] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.2.0/md_migration_assessment-0.2.0-py3-none-any.whl"
 # or, hacking on the repo itself:
 git clone https://github.com/motherduckdb/md-migration-assessment.git
 cd md-migration-assessment && uv run --extra snowflake md-assess --help
@@ -128,13 +128,12 @@ an error.
 ## Quickstart: Databricks (local mode)
 
 Requires Python 3.10+ and a Unity Catalog workspace with system tables enabled.
-Until a release includes the Databricks adapter, install it from the
-`databricks-adapter-v2` branch; after that, use the release wheel the same way
-as the Snowflake block above.
+This installs the versioned `v0.2.0` GitHub release asset, the same as the
+Snowflake block above.
 
 ```bash
 # 1. Install the collector as a CLI tool, with the Databricks client extra
-uv tool install "md-migration-assessment[databricks] @ git+https://github.com/motherduckdb/md-migration-assessment@databricks-adapter-v2"
+uv tool install "md-migration-assessment[databricks] @ https://github.com/motherduckdb/md-migration-assessment/releases/download/v0.2.0/md_migration_assessment-0.2.0-py3-none-any.whl"
 
 # 2. Databricks connection. With no token or client secret set, a browser
 #    sign-in (OAuth U2M) opens on first use.
@@ -145,10 +144,6 @@ export DATABRICKS_WAREHOUSE_ID="<warehouse_id>"   # a Small serverless warehouse
 md-assess collect --source databricks --profile standard --history-days 30 --output assessment.duckdb
 md-assess report  --db assessment.duckdb
 ```
-
-A git install has no dashboard bundle (it is a build output), so `collect` and
-`report` work but `dashboard` and `publish` need `cd dive && npm run bundle` in
-a clone first.
 
 For unattended runs, use a service principal instead of browser sign-in: set
 `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (OAuth M2M). A personal
