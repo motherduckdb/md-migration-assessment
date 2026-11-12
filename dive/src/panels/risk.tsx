@@ -194,11 +194,14 @@ function FeatureInventory() {
   );
 }
 
+import { useVendor } from '../vendor';
+
 export function RiskPanel() {
+  const vendor = useVendor();
   return (
     <Panel
       title="5 · Migration-risk panel"
-      sub="Left: Snowflake-specific SQL constructs as a share of the queries the server-side heuristic scanned (query text was never collected; these are frequency signals). Right: feature inventory by category with the collector's observed / observed-zero / unknown states preserved."
+      sub={`Left: ${vendor.name}-specific SQL constructs as a share of the queries the server-side heuristic scanned (query text was never collected; these are frequency signals). Right: feature inventory by category with the collector's observed / observed-zero / unknown states preserved.`}
     >
       <Row>
         <div>

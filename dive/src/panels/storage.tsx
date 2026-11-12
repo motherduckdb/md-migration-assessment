@@ -61,7 +61,10 @@ function StorageBars({ rows, height, onClick, labelWidth }: { rows: StorageRow[]
   );
 }
 
+import { useVendor } from '../vendor';
+
 export function StoragePanel({ filters, drill, setDrill }: { filters: Filters; drill: string | null; setDrill: (v: string | null) => void }) {
+  const vendor = useVendor();
   const byDb = useSQLQuery(Q.storageByDatabase(filters));
   const schemaFilters: Filters = { ...filters, database: drill ?? filters.database };
   const bySchema = useSQLQuery(Q.storageBySchema(schemaFilters));
@@ -74,7 +77,7 @@ export function StoragePanel({ filters, drill, setDrill }: { filters: Filters; d
   return (
     <Panel
       title="1 · Storage footprint"
-      sub="Active vs time-travel vs fail-safe bytes per database (user objects unless the system-objects toggle is on). Fail-safe is retained by Snowflake and disappears on migration; it is stacked separately so it is never folded into the migrated total. Click a bar to drill into schemas; click it again to clear."
+      sub={`${vendor.storageNote} Click a bar to drill into schemas; click it again to clear.`}
     >
       <Row>
         <div>

@@ -23,6 +23,7 @@ a release notes a schema change. See [Support](SUPPORT.md) and
 | `--source` | Status | Install extra | Connection |
 |---|---|---|---|
 | `snowflake` (default) | complete assessment (catalog, sizing, features, workload aggregates) | `md-migration-assessment[snowflake]` | `SNOWFLAKE_*` env vars, see below |
+| `databricks` | complete assessment (Unity Catalog, storage, system-table spend and workload, jobs, lineage) | `md-migration-assessment[databricks]` | `DATABRICKS_*` env vars, see below |
 
 ## Trust model
 
@@ -123,6 +124,51 @@ profile/scope/window from the existing collection rather than from flags. It
 refuses to mix deployments: resuming against a different Snowflake account
 (or a different source kind) than the one recorded in `meta.collections` is
 an error.
+
+## Quickstart: Databricks (local mode)
+
+Requires Python 3.10+ and a Unity Catalog workspace with system tables enabled.
+Until a release includes the Databricks adapter, install it from the
+`databricks-adapter-v2` branch; after that, use the release wheel the same way
+as the Snowflake block above.
+
+```bash
+# 1. Install the collector as a CLI tool, with the Databricks client extra
+uv tool install "md-migration-assessment[databricks] @ git+https://github.com/motherduckdb/md-migration-assessment@databricks-adapter-v2"
+
+# 2. Databricks connection. With no token or client secret set, a browser
+#    sign-in (OAuth U2M) opens on first use.
+export DATABRICKS_HOST="<workspace>.cloud.databricks.com"
+export DATABRICKS_WAREHOUSE_ID="<warehouse_id>"   # a Small serverless warehouse is enough
+
+# 3. Collect into a local DuckDB file and print the summary
+md-assess collect --source databricks --profile standard --history-days 30 --output assessment.duckdb
+md-assess report  --db assessment.duckdb
+```
+
+A git install has no dashboard bundle (it is a build output), so `collect` and
+`report` work but `dashboard` and `publish` need `cd dive && npm run bundle` in
+a clone first.
+
+For unattended runs, use a service principal instead of browser sign-in: set
+`DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (OAuth M2M). A personal
+access token (`DATABRICKS_TOKEN`) also works but ties the run to a person. To
+run on MotherDuck compute instead of your machine, see
+[`flight/databricks/`](flight/databricks/README.md).
+
+Spend, queries and jobs cover only the workspace you connect to. To cover more,
+set `DATABRICKS_WORKSPACES` to `all` or to a comma-separated list of workspace
+IDs. The report lists the workspaces it covered. An ID that matches no workspace
+stops the run.
+
+The collector sees only what its login is granted, so use a login that can see
+everything you want assessed. The grants it needs are listed in the Databricks
+Flight cookbook recipe. Any grant left out only marks that extractor `unavailable`; the rest
+of the collection still runs.
+
+Tables named `__materialization_*` or `event_log_*` are treated as hidden
+pipeline tables: they are counted as system tables and left out of the table
+signals. A user table with one of those prefixes is skipped the same way.
 
 ## Local dashboard
 

@@ -48,11 +48,13 @@ def probe(
     *,
     exclude: str | None = None,
     table: str | None = None,
+    distinct: bool = False,
 ) -> Signal:
     """Build the standard count-and-sample probe.
 
     ``exclude`` is an extra predicate that drops the source's own system
     furniture from the count (each adapter knows what that looks like).
+    ``distinct`` counts distinct objects instead of matching rows.
     """
     table = table or source
     conds = [f"collection_id = '{{cid}}'", f"({predicate})"]
@@ -61,7 +63,7 @@ def probe(
     where = " AND ".join(conds)
     sql = (
         f'WITH hits AS (SELECT {obj_expr} AS obj FROM raw."{table}" WHERE {where})\n'
-        "SELECT (SELECT count(*) FROM hits) AS n,\n"
+        f"SELECT (SELECT {'count(DISTINCT obj)' if distinct else 'count(*)'} FROM hits) AS n,\n"
         "       (SELECT coalesce(list(obj), []) FROM\n"
         "          (SELECT DISTINCT obj FROM hits ORDER BY obj LIMIT 20)) AS sample_objects"
     )

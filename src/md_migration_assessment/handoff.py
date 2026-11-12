@@ -188,6 +188,12 @@ AGGREGATE_SENSITIVE_COLUMNS: dict[str, PrivacyClass] = {
 #: strings from the fact builders and stay labels.
 AGGREGATE_TABLE_SENSITIVE_COLUMNS: dict[str, dict[str, PrivacyClass]] = {
     "report.feature_inventory": {"note": PrivacyClass.COMMENT},
+    # Databricks warnings: policy function, column and workspace names
+    "report.collection_warnings": {
+        "policy_function": PrivacyClass.OBJECT_NAME,
+        "columns": PrivacyClass.OBJECT_NAME,
+        "workspaces": PrivacyClass.OBJECT_NAME,
+    },
 }
 
 #: string columns whose values are produced by this tool (statuses, labels,
@@ -202,6 +208,18 @@ AGGREGATE_LABEL_COLUMNS: frozenset[str] = frozenset({
     "load_method", "confidence", "detection_method", "tool",
     "shape_key", "query_parameterized_hash_version",
 })
+
+#: per-table labels: tool-chosen texts and vendor format names that are
+#: labels only in these tables, so the same name elsewhere stays unclassified.
+AGGREGATE_TABLE_LABEL_COLUMNS: dict[str, frozenset[str]] = {
+    # Databricks fact tables
+    "report.collection_warnings": frozenset({"warning", "detail"}),
+    "report.readable_in_place": frozenset(
+        {"data_source_format", "uniform_formats", "storage_scheme", "read_path"}),
+    "report.sizing": frozenset({"data_source_format"}),
+    "report.spend_profile": frozenset({"billing_origin_product"}),
+    "report.spend_by_layer": frozenset({"billing_origin_product", "layer", "method"}),
+}
 _LABEL_SUFFIXES = ("_extract_status",)
 
 
@@ -229,6 +247,7 @@ def classify_aggregate_columns(
     """(sensitive_included by class, unclassified) for one meta/report table's
     string columns; ``table_key`` is ``schema.table`` for per-table overrides."""
     overrides = AGGREGATE_TABLE_SENSITIVE_COLUMNS.get(table_key, {})
+    labels = AGGREGATE_LABEL_COLUMNS | AGGREGATE_TABLE_LABEL_COLUMNS.get(table_key, frozenset())
     disclosed: dict[str, list[str]] = {}
     unclassified: list[str] = []
     for col in columns:
@@ -236,7 +255,7 @@ def classify_aggregate_columns(
         cls = overrides.get(key) or AGGREGATE_SENSITIVE_COLUMNS.get(key)
         if cls is not None:
             disclosed.setdefault(cls.value, []).append(key)
-        elif key in AGGREGATE_LABEL_COLUMNS or key.endswith(_LABEL_SUFFIXES):
+        elif key in labels or key.endswith(_LABEL_SUFFIXES):
             continue
         else:
             unclassified.append(key)

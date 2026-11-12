@@ -4,7 +4,7 @@
 import { useMemo } from 'react';
 import { useSQLQuery } from '@motherduck/react-sql-query';
 import { Bar, BarChart, CartesianGrid, Cell, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { N, S, formatBytes, formatInt, formatMs, pivot } from '../format';
+import { N, NN, S, formatBytes, formatInt, formatMs, intOrMissing, pivot } from '../format';
 import { CONFIDENCE, LOAD_METHOD, MUTED } from '../palette';
 import * as Q from '../queries';
 import type { Filters } from '../queries';
@@ -12,25 +12,29 @@ import { ErrorNote, Panel, Row, Skeleton, TipBox } from '../ui';
 
 function Ingestion({ filters }: { filters: Filters }) {
   const query = useSQLQuery(Q.ingestion(filters));
-  const { rows, methods, detail } = useMemo(() => {
+  const { rows, methods, detail, byBytes } = useMemo(() => {
     const long = (Array.isArray(query.data) ? query.data : []).map((r) => ({
       name: S(r.name),
       load_method: S(r.load_method),
       bytes_loaded: N(r.bytes_loaded),
-      files: N(r.files),
-      rows_loaded: N(r.rows_loaded),
+      files: NN(r.files),
+      rows_loaded: NN(r.rows_loaded),
       tables: N(r.tables),
     }));
     const methods = [...new Set(long.map((r) => r.load_method))].sort();
-    const rows = pivot(long, 'name', 'load_method', 'bytes_loaded').sort(
+    // Sources without load byte counts (e.g. Databricks lineage) chart tables written instead.
+    const byBytes = long.some((r) => r.bytes_loaded > 0);
+    const rows = pivot(long, 'name', 'load_method', byBytes ? 'bytes_loaded' : 'tables').sort(
       (a, b) => methods.reduce((s, m) => s + N(b[m]), 0) - methods.reduce((s, m) => s + N(a[m]), 0),
     );
-    const detail = new Map<string, { files: number; rows_loaded: number; tables: number }>();
+    // NULL + NULL stays NULL ("not collected"); a number plus NULL keeps the number.
+    const add = (a: number | null, b: number | null) => (a == null && b == null ? null : N(a) + N(b));
+    const detail = new Map<string, { files: number | null; rows_loaded: number | null; tables: number }>();
     for (const r of long) {
-      const d = detail.get(r.name) ?? { files: 0, rows_loaded: 0, tables: 0 };
-      detail.set(r.name, { files: d.files + r.files, rows_loaded: d.rows_loaded + r.rows_loaded, tables: d.tables + r.tables });
+      const d = detail.get(r.name) ?? { files: null, rows_loaded: null, tables: 0 };
+      detail.set(r.name, { files: add(d.files, r.files), rows_loaded: add(d.rows_loaded, r.rows_loaded), tables: d.tables + r.tables });
     }
-    return { rows, methods, detail };
+    return { rows, methods, detail, byBytes };
   }, [query.data]);
   if (query.isError) return <ErrorNote error={query.error} />;
   if (query.isLoading && rows.length === 0) return <Skeleton height={260} />;
@@ -39,7 +43,7 @@ function Ingestion({ filters }: { filters: Filters }) {
     <ResponsiveContainer width="100%" height={Math.max(200, 30 * Math.min(rows.length, 12) + 60)}>
       <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 4 }} barCategoryGap={4}>
         <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
-        <XAxis type="number" tickFormatter={(v) => formatBytes(v, 0)} fontSize={11} tickCount={5} />
+        <XAxis type="number" tickFormatter={(v) => (byBytes ? formatBytes(v, 0) : formatInt(v))} fontSize={11} tickCount={5} allowDecimals={false} label={byBytes ? undefined : { value: 'tables written', position: 'insideBottomRight', offset: -2, fontSize: 11, fill: MUTED }} />
         <YAxis type="category" dataKey="name" width={150} fontSize={11} interval={0} />
         <Tooltip
           cursor={{ fill: 'rgba(7,119,179,.06)' }}
@@ -50,8 +54,8 @@ function Ingestion({ filters }: { filters: Filters }) {
               <TipBox
                 title={String(label)}
                 rows={[
-                  ...payload.filter((p) => N(p.value) > 0).map((p) => ({ color: String(p.color), name: String(p.name), value: formatBytes(p.value) })),
-                  ...(d ? [{ name: 'tables', value: formatInt(d.tables) }, { name: 'files', value: formatInt(d.files) }, { name: 'rows loaded', value: formatInt(d.rows_loaded) }] : []),
+                  ...payload.filter((p) => N(p.value) > 0).map((p) => ({ color: String(p.color), name: String(p.name), value: byBytes ? formatBytes(p.value) : `${formatInt(p.value)} tables` })),
+                  ...(d ? [{ name: 'tables', value: formatInt(d.tables) }, { name: 'files', value: intOrMissing(d.files) }, { name: 'rows loaded', value: intOrMissing(d.rows_loaded) }] : []),
                 ]}
               />
             );
@@ -129,7 +133,7 @@ export function IngestionPanel({ filters }: { filters: Filters }) {
   return (
     <Panel
       title="6 · Ingestion and client tools"
-      sub="Left: bytes loaded per database in the window by load method (follows the database selection). Right: client-tool fingerprints from session metadata, ranked by query events; colour is detection confidence."
+      sub="Left: bytes loaded per database in the window by load method, or tables written where the source records no load bytes (follows the database selection). Right: client-tool fingerprints from session metadata, ranked by query events; colour is detection confidence."
     >
       <Row>
         <div>

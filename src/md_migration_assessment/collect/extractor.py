@@ -72,6 +72,9 @@ class GlobalQuery:
     #: the system view/table the extract reads when it differs from the
     #: extract name (provenance; several extracts may read one view)
     source_view: str | None = None
+    #: see PerDatabaseQuery.visibility_bound (true for e.g. Unity Catalog
+    #: system.information_schema, which lists only what the role can see)
+    visibility_bound: bool = False
 
 
 @dataclass(frozen=True)

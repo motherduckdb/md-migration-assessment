@@ -164,6 +164,8 @@ GRAMMAR = ScopeGrammar(
 @dataclass(frozen=True)
 class FakeAdapter:
     name: str = "fakewh"
+    display_name: str = "FakeWH"
+    deployment_noun: str = "FakeWH instance"
     raw_schema_version: int = 1
     extractors: list = field(default_factory=lambda: EXTRACTORS)
     scope: ScopeGrammar = GRAMMAR

@@ -4,8 +4,12 @@ Read this guide before running an assessment or sharing its output.
 
 ## Network and upload behavior
 
-The collector connects to the configured source warehouse. It does not implement
-telemetry, a MotherDuck connection, or automatic upload. Collection output stays
+The collector connects to the configured source warehouse. For Databricks it
+also calls the workspace's Jobs REST API (`jobs/list`, `jobs/get` and
+`workspace/get-status`) for the `job_tasks` extract, on the same host and with
+the same login. It reads task types, notebook languages, compute kinds, library
+kinds and triggers; it does not read notebook code, paths or parameters. It
+does not implement telemetry, a MotherDuck connection, or automatic upload. Collection output stays
 in the local path supplied with `--output` and is created with mode `0600`.
 
 Collection never uploads anything. The only command that talks to MotherDuck is
@@ -29,8 +33,8 @@ screenshot of it as you would the collection itself.
 | Data category | Local assessment | Default handoff |
 |---|---:|---:|
 | Workload query text | Never collected | Not present |
-| View, function, procedure, policy, task, and alert source bodies | Included when visible to the Snowflake role | Excluded |
-| Database, schema, table, column, integration, and warehouse names | Included | Included |
+| View, function, procedure, policy, task, and alert source bodies | Included when visible to the collecting role or principal | Excluded |
+| Database (catalog), schema, table, column, integration, and warehouse names | Included | Included |
 | User names, role names, and ownership fields | Included where required by an extractor | Included |
 | Object comments and tag values | Included | Included |
 | Aggregate workload, storage, usage, and coverage facts | Included | Included |

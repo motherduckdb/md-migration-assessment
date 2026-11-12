@@ -19,11 +19,13 @@ import type { Filters } from './queries';
 import { CoverageStrip } from './coverage';
 import { StoragePanel } from './panels/storage';
 import { SpendPanel, type DateRange } from './panels/spend';
+import { SpendByLayerPanel } from './panels/layers';
 import { WorkloadPanel } from './panels/workload';
 import { ConcurrencyPanel } from './panels/concurrency';
 import { RiskPanel } from './panels/risk';
 import { IngestionPanel } from './panels/ingestion';
-import { CSS, Skeleton, Warn } from './ui';
+import { CSS, ErrorNote, Skeleton, Warn } from './ui';
+import { VendorProvider, useCollectionRow, useVendor } from './vendor';
 
 // `md-assess publish` rewrites the path to the uploaded database; the alias is
 // what every query in ./queries.ts uses and must stay `assessment`.
@@ -36,24 +38,20 @@ export const REQUIRED_DATABASES = [
 ];
 
 function Header() {
-  const coll = useSQLQuery(Q.collection());
+  const v = useVendor();
+  const c = useCollectionRow();
   const win = useSQLQuery(Q.window());
-  const c = (Array.isArray(coll.data) ? coll.data : [])[0] ?? {};
   const w = (Array.isArray(win.data) ? win.data : [])[0] ?? {};
   const account = [S(c.source_deployment), S(c.source_region)].filter(Boolean).join(' · ') || '(account not recorded)';
   return (
     <header>
-      <h1 style={{ fontSize: 22, margin: '4px 0 6px', fontWeight: 600 }}>Snowflake → MotherDuck migration assessment</h1>
-      {coll.isLoading && !coll.data ? (
-        <Skeleton height={60} />
-      ) : (
-        <p style={{ margin: '0 0 8px', maxWidth: 1200 }}>
-          Read-only dashboard over the <code>md-assess</code> {S(c.tool_version)} collection (profile {S(c.profile) || 'standard'}) of Snowflake account <strong>{account}</strong>
-          {c.started_at ? <>, collected {S(c.started_at)}</> : null}. History window:{' '}
-          <strong>{w.window_start ? `${S(w.window_start)} → ${S(w.window_end)}` : 'unknown'}</strong> ({N(c.history_days) || '?'} days requested). Every count excludes Snowflake system objects unless the system-objects toggle is on. Counts marked <strong>≥</strong> are lower bounds limited by what the collecting role could see. Missing evidence is never shown as zero:{' '}
-          <span className="chip chip-unknown">unknown</span> is a distinct state from <span className="chip chip-zero">observed zero</span>. Credits are Snowflake credits (no rate is recorded, so no dollar figure is implied); latencies are server-side elapsed time.
-        </p>
-      )}
+      <h1 style={{ fontSize: 22, margin: '4px 0 6px', fontWeight: 600 }}>{v.name} → MotherDuck migration assessment</h1>
+      <p style={{ margin: '0 0 8px', maxWidth: 1200 }}>
+        Read-only dashboard over the <code>md-assess</code> {S(c.tool_version)} collection (profile {S(c.profile) || 'standard'}) of {v.account} <strong>{account}</strong>
+        {c.started_at ? <>, collected {S(c.started_at)}</> : null}. History window:{' '}
+        <strong>{w.window_start ? `${S(w.window_start)} → ${S(w.window_end)}` : 'unknown'}</strong> ({N(c.history_days) || '?'} days requested). Every count excludes {v.name} system objects unless the system-objects toggle is on. Counts marked <strong>≥</strong> are lower bounds limited by what the collecting role could see. Missing evidence is never shown as zero:{' '}
+        <span className="chip chip-unknown">unknown</span> is a distinct state from <span className="chip chip-zero">observed zero</span>. {v.credits}; latencies are server-side elapsed time.
+      </p>
       <Warn>This dashboard names real databases, schemas, tables, warehouses and tools. Share it only with people entitled to see them.</Warn>
     </header>
   );
@@ -76,7 +74,42 @@ function MultiSelect({ label, options, value, onChange }: { label: string; optio
   );
 }
 
+// Resolve the vendor once here; render nothing vendor-specific until the collection row is known.
 export default function AssessmentDashboard() {
+  const coll = useSQLQuery(Q.collection());
+  const row = (Array.isArray(coll.data) ? coll.data : [])[0];
+  // Without the collection row the source is unknown: show the error rather
+  // than rendering every panel with one vendor's wording guessed.
+  if (coll.isError || (!coll.isLoading && !row)) {
+    return (
+      <div className="mda" style={{ background: BG, padding: '16px 20px 40px', minHeight: '100%' }}>
+        <style>{CSS}</style>
+        <h1 style={{ fontSize: 22, margin: '4px 0 6px', fontWeight: 600 }}>Migration assessment</h1>
+        {coll.isError ? (
+          <ErrorNote error={coll.error} />
+        ) : (
+          <p style={{ color: MUTED }}>No collection found in meta.collections, so there is nothing to show.</p>
+        )}
+      </div>
+    );
+  }
+  if (!row) {
+    return (
+      <div className="mda" style={{ background: BG, padding: '16px 20px 40px', minHeight: '100%' }}>
+        <style>{CSS}</style>
+        <Skeleton height={120} />
+      </div>
+    );
+  }
+  return (
+    <VendorProvider row={row}>
+      <Dashboard />
+    </VendorProvider>
+  );
+}
+
+function Dashboard() {
+  const vendor = useVendor();
   const [wh, setWh] = useDiveState<string[]>('wh', []);
   const [range, setRange] = useDiveState<DateRange>('range', null);
   const [db, setDb] = useDiveState<string | null>('db', null);
@@ -131,7 +164,7 @@ export default function AssessmentDashboard() {
             </select>
           </label>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <input type="checkbox" checked={Boolean(sys)} onChange={(e) => setSys(e.target.checked || undefined)} /> show Snowflake system objects (SNOWFLAKE shared database)
+            <input type="checkbox" checked={Boolean(sys)} onChange={(e) => setSys(e.target.checked || undefined)} /> {vendor.systemObjects}
           </label>
           <span style={{ color: MUTED, fontSize: 12 }}>
             {range ? <>dates <strong>{range.start} → {range.end}</strong></> : 'all dates'}
@@ -145,6 +178,7 @@ export default function AssessmentDashboard() {
         <main style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <StoragePanel filters={filters} drill={drill} setDrill={(v) => setDrill(v ?? undefined)} />
           <SpendPanel filters={filters} warehouses={warehouses} color={color} range={range} setRange={(r) => setRange(r ?? undefined)} />
+          {vendor.kind === 'databricks' ? <SpendByLayerPanel filters={filters} /> : null}
           <WorkloadPanel filters={filters} color={color} />
           <ConcurrencyPanel filters={filters} warehouses={warehouses} color={color} windowDays={windowDays} />
           <RiskPanel />

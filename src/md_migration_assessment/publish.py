@@ -26,12 +26,13 @@ from typing import Any, Callable, Protocol
 import duckdb
 
 from .handoff import build_handoff
+from .sources import get_adapter
 
 ALIAS = "assessment"
 PLACEHOLDER_PATH = "md:md_assessment"
 DIVE_SOURCE_PATH = Path(__file__).resolve().parent / "dashboard" / "dive.tsx"
 DIVE_URL = "https://app.motherduck.com/dives/{id}"
-DEFAULT_TITLE = "Snowflake → MotherDuck migration assessment"
+TITLE_TEMPLATE = "{source} → MotherDuck migration assessment"
 TOKEN_ENV = ("MOTHERDUCK_TOKEN", "motherduck_token")
 BUNDLE_HINT = "the Dive source is not bundled; run `npm install && npm run bundle` in dive/"
 
@@ -101,14 +102,14 @@ def _collection_facts(db_path: Path) -> dict[str, Any]:
     try:
         row = con.execute(
             "SELECT source_deployment, source_region, tool_version, "
-            "strftime(started_at, '%Y-%m-%d') FROM meta.collections "
+            "strftime(started_at, '%Y-%m-%d'), source_kind FROM meta.collections "
             "ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
     finally:
         con.close()
     if row is None:
         raise ValueError(f"{db_path} has no collection in meta.collections")
-    return {"deployment": row[0], "region": row[1], "tool_version": row[2], "collected": row[3]}
+    return {"deployment": row[0], "region": row[1], "tool_version": row[2], "collected": row[3], "source_kind": row[4]}
 
 
 def _required_resources_sql(database: str) -> str:
@@ -126,13 +127,83 @@ def _upload(con: Connection, database: str, handoff: Path, *, replace: bool, log
         if not replace:
             raise ValueError(
                 f"MotherDuck database {database!r} already exists; re-run with --replace to "
-                "drop and re-upload it, or pick another --name"
+                "replace its contents, or pick another --name"
             ) from exc
-        drop = f"DROP DATABASE {sql_ident(database)}"
-        log.append(drop)
-        con.execute(drop)
-        log.append(create)
-        con.execute(create)
+        _replace_in_place(con, database, handoff, log=log)
+
+
+def _handoff_tables(handoff: Path) -> list[tuple[str, str]]:
+    """The (schema, table) pairs in the handoff file. The handoff holds only tables."""
+    con = duckdb.connect(str(handoff), read_only=True)
+    try:
+        return [(s, t) for s, t in con.execute(
+            "SELECT schema_name, table_name FROM duckdb_tables() ORDER BY 1, 2").fetchall()]
+    finally:
+        con.close()
+
+
+def _replace_in_place(con: Connection, database: str, handoff: Path, *, log: list[str]) -> None:
+    """Replace the database's tables with the handoff's, without dropping the database.
+
+    Dropping it would fail (or, with CASCADE, delete them) when the database
+    has shares, and a Flight that refreshes a shared database must keep them.
+    So the handoff is attached read-only, every table is replaced in one
+    transaction, and tables the new handoff no longer has are dropped, along
+    with any schema that this leaves empty.
+    """
+    db = sql_ident(database)
+    src = "md_assess_handoff"
+    tables = _handoff_tables(handoff)
+    wanted = {(s.lower(), t.lower()) for s, t in tables}
+    wanted_schemas = {s.lower() for s, _ in tables}
+    attach = f"ATTACH {sql_literal(str(handoff))} AS {src} (READ_ONLY)"
+    log.append(attach)
+    con.execute(attach)
+    try:
+        # Catalog names match case-insensitively, so the lookup must too, or a
+        # --name in another case would leave stale tables behind.
+        in_db = f"lower(database_name) = lower({sql_literal(database)})"
+        existing_sql = f"SELECT schema_name, table_name FROM duckdb_tables() WHERE {in_db}"
+        log.append(existing_sql)
+        existing = con.execute(existing_sql).fetchall() or []
+        # Schemas holding anything besides tables (views, macros, sequences,
+        # types) are kept: DROP SCHEMA would fail on them and sink the replace.
+        views_sql = (
+            f"SELECT schema_name FROM duckdb_views() WHERE {in_db} AND NOT internal "
+            f"UNION SELECT schema_name FROM duckdb_functions() WHERE {in_db} AND NOT internal "
+            f"UNION SELECT schema_name FROM duckdb_sequences() WHERE {in_db} "
+            f"UNION SELECT schema_name FROM duckdb_types() WHERE {in_db} AND NOT internal"
+        )
+        log.append(views_sql)
+        schemas_with_views = {r[0].lower() for r in (con.execute(views_sql).fetchall() or [])}
+        stale = [(s, t) for s, t in existing if (s.lower(), t.lower()) not in wanted]
+        # A schema the handoff no longer has is dropped once its tables are,
+        # unless something else still lives in it.
+        empty_schemas = sorted({s for s, _ in stale
+                                if s.lower() not in wanted_schemas
+                                and s.lower() not in schemas_with_views
+                                and s.lower() != "main"})
+        steps = ["BEGIN TRANSACTION"]
+        steps += [f"CREATE SCHEMA IF NOT EXISTS {db}.{sql_ident(s)}" for s in sorted({s for s, _ in tables})]
+        steps += [f"CREATE OR REPLACE TABLE {db}.{sql_ident(s)}.{sql_ident(t)} AS "
+                  f"FROM {src}.{sql_ident(s)}.{sql_ident(t)}" for s, t in tables]
+        steps += [f"DROP TABLE {db}.{sql_ident(s)}.{sql_ident(t)}" for s, t in stale]
+        steps += [f"DROP SCHEMA {db}.{sql_ident(s)}" for s in empty_schemas]
+        steps.append("COMMIT")
+        for step in steps:
+            log.append(step)
+            try:
+                con.execute(step)
+            except Exception:
+                if step != "BEGIN TRANSACTION":
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:  # noqa: BLE001 - keep the error that caused it
+                        pass
+                raise
+    finally:
+        log.append(f"DETACH {src}")
+        con.execute(f"DETACH {src}")
 
 
 def _upsert_dive(
@@ -189,9 +260,11 @@ def publish(
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", database):
         raise ValueError(f"database name {database!r} must be an identifier ([A-Za-z_][A-Za-z0-9_]*)")
     where = " · ".join(x for x in (facts["deployment"], facts["region"]) if x)
-    title = title or (f"{DEFAULT_TITLE} · {facts['deployment']}" if facts["deployment"] else DEFAULT_TITLE)
+    adapter = get_adapter(facts["source_kind"] or "snowflake")
+    default_title = TITLE_TEMPLATE.format(source=getattr(adapter, "display_name", adapter.name.title()))
+    title = title or (f"{default_title} · {facts['deployment']}" if facts["deployment"] else default_title)
     description = (
-        f"Read-only dashboard over the md-assess {facts['tool_version']} handoff of Snowflake account "
+        f"Read-only dashboard over the md-assess {facts['tool_version']} handoff of {getattr(adapter, 'deployment_noun', adapter.name.title() + ' deployment')} "
         f"{where or '(not recorded)'}, collected {facts['collected']}. Facts and coverage only: "
         "no source bodies or query text were uploaded."
     )

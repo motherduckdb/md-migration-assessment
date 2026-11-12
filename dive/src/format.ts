@@ -3,6 +3,10 @@
 // numeric field goes through N() before it reaches JSX or Recharts.
 
 export const N = (v: unknown): number => (v == null ? 0 : Number(v));
+/** Like N, but keeps NULL: a measure the source doesn't collect is not zero. */
+export const NN = (v: unknown): number | null => (v == null ? null : Number(v));
+/** A count for a tooltip, or "not collected" when the source has none. */
+export const intOrMissing = (v: number | null): string => (v == null ? 'not collected' : formatInt(v));
 export const S = (v: unknown): string => (v == null ? '' : String(v));
 
 // Binary scale (1 GB = 1024^3 bytes), unit labels per the assessment spec.

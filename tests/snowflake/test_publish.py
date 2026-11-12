@@ -66,6 +66,8 @@ class FakeMotherDuck:
             self.database_exists = False
         elif "MD_LIST_DIVES" in up:
             self._last = [(d,) for d in self.existing_dives]
+        elif "FROM DUCKDB_TABLES()" in up:
+            self._last = [("raw", "gone_table"), ("report", "feature_inventory")]
         elif "MD_CREATE_DIVE" in up:
             self._last = [("11111111-2222-4333-8444-555555555555",)]
         else:
@@ -138,8 +140,16 @@ def test_publish_refuses_existing_database_unless_replace(assessed_db, dive_tsx,
 
     fake = FakeMotherDuck(database_exists=True)
     result = _publish(assessed_db, dive_tsx, tmp_path / "again", fake, database="md_assessment_x", replace=True)
-    ops = [" ".join(s.split(" ")[:2]) for s in fake.statements if s.startswith(("CREATE DATABASE", "DROP DATABASE"))]
-    assert ops == ["CREATE DATABASE", "DROP DATABASE", "CREATE DATABASE"]
+    # Replace refreshes the tables in place: dropping the database would fail
+    # (or delete its shares), so it is never dropped.
+    assert not any(s.startswith("DROP DATABASE") for s in fake.statements)
+    replaced = [s for s in fake.statements if s.startswith("CREATE OR REPLACE TABLE")]
+    assert replaced and all(s.startswith('CREATE OR REPLACE TABLE "md_assessment_x".') for s in replaced)
+    assert any('"report"."feature_inventory"' in s for s in replaced)
+    assert fake.statements.index("BEGIN TRANSACTION") < fake.statements.index("COMMIT")
+    assert fake.statements[fake.statements.index("COMMIT") + 1] == "DETACH md_assess_handoff"
+    # a table the new handoff no longer has is dropped
+    assert 'DROP TABLE "md_assessment_x"."raw"."gone_table"' in fake.statements
     assert result.database == "md_assessment_x"
 
 
@@ -166,3 +176,81 @@ def test_database_name_and_identifier_validation(assessed_db, dive_tsx, tmp_path
 
 def stat_mode(path: Path) -> int:
     return os.stat(path).st_mode & 0o777
+
+
+# ── replace in place, against a real DuckDB catalog ───────────────────────
+
+
+def _handoff_file(path: Path, tables: dict[str, list[str]]) -> Path:
+    """A small handoff file: {schema: [table, ...]}, one row per table."""
+    con = duckdb.connect(str(path))
+    for schema, names in tables.items():
+        con.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        for name in names:
+            con.execute(f'CREATE TABLE "{schema}"."{name}" AS SELECT 1 AS v')
+    con.close()
+    return path
+
+
+def _target(tmp_path: Path, attach_as: str) -> duckdb.DuckDBPyConnection:
+    """A connection with an earlier assessment attached under ``attach_as``."""
+    con = duckdb.connect()
+    con.execute(f"ATTACH '{tmp_path / 'target.duckdb'}' AS \"{attach_as}\"")
+    for sql in ('CREATE SCHEMA "{d}".report', 'CREATE SCHEMA "{d}".old',
+                'CREATE SCHEMA "{d}".kept', 'CREATE TABLE "{d}".report.feature_inventory AS SELECT 0 AS v',
+                'CREATE TABLE "{d}".report.gone AS SELECT 0 AS v',
+                'CREATE TABLE "{d}".old.t AS SELECT 0 AS v',
+                'CREATE TABLE "{d}".kept.t AS SELECT 0 AS v',
+                'CREATE VIEW "{d}".kept.v AS SELECT 1 AS x',
+                'CREATE SCHEMA "{d}".macros', 'CREATE TABLE "{d}".macros.t AS SELECT 0 AS v',
+                'CREATE MACRO "{d}".macros.m(x) AS x + 1'):
+        con.execute(sql.format(d=attach_as))
+    return con
+
+
+def test_replace_in_place_drops_stale_tables_whatever_the_name_case(tmp_path):
+    """--name in another case still finds and drops tables the new handoff no longer has."""
+    handoff = _handoff_file(tmp_path / "h.duckdb", {"report": ["feature_inventory"]})
+    con = _target(tmp_path, "md_assessment_x")
+    pub._replace_in_place(con, "MD_Assessment_X", handoff, log=[])
+    tables = con.execute("SELECT schema_name, table_name FROM duckdb_tables() "
+                         "WHERE database_name = 'md_assessment_x' ORDER BY ALL").fetchall()
+    # stale tables gone; the schema with a user view keeps its view
+    assert tables == [("report", "feature_inventory")]
+    assert con.execute("SELECT v FROM md_assessment_x.report.feature_inventory").fetchone() == (1,)
+    schemas = {r[0] for r in con.execute(
+        "SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'md_assessment_x'").fetchall()}
+    assert "old" not in schemas and "kept" in schemas
+    # a schema with a macro in it is kept too, instead of failing the replace
+    assert "macros" in schemas
+    assert con.execute("SELECT x FROM md_assessment_x.kept.v").fetchone() == (1,)
+
+
+def test_replace_in_place_rolls_back_and_keeps_the_real_error(tmp_path, monkeypatch):
+    """A failing step rolls the whole replace back; a failing ROLLBACK does not hide the cause."""
+    handoff = _handoff_file(tmp_path / "h.duckdb", {"report": ["feature_inventory", "new_one"]})
+    con = _target(tmp_path, "md_assessment_x")
+
+    class Flaky:
+        """Wraps the connection: the second CREATE OR REPLACE fails, and so does ROLLBACK."""
+
+        def __init__(self, inner):
+            self.inner, self.creates = inner, 0
+
+        def execute(self, sql, *args):
+            if sql.startswith("CREATE OR REPLACE TABLE"):
+                self.creates += 1
+                if self.creates == 2:
+                    raise duckdb.IOException("network blip")
+            if sql == "ROLLBACK":
+                self.inner.execute(sql)
+                raise duckdb.ConnectionException("rollback failed too")
+            return self.inner.execute(sql, *args)
+
+    with pytest.raises(duckdb.IOException, match="network blip"):
+        pub._replace_in_place(Flaky(con), "md_assessment_x", handoff, log=[])
+    # nothing changed: the old tables are all still there with their old rows
+    tables = con.execute("SELECT schema_name, table_name FROM duckdb_tables() "
+                         "WHERE database_name = 'md_assessment_x' ORDER BY ALL").fetchall()
+    assert ("report", "gone") in tables and ("report", "new_one") not in tables
+    assert con.execute("SELECT v FROM md_assessment_x.report.feature_inventory").fetchone() == (0,)

@@ -8,6 +8,7 @@ import typer
 
 from . import __version__, db
 from .collect.extractor import Profile
+from .collect.runner import DEPLOYMENT_WIDE_NOTE
 from .db import open_output
 from .sources import SOURCE_KINDS, get_adapter
 
@@ -377,12 +378,16 @@ def report(
             [str(cid)],
         ).fetchall()
         w = max(len(r[0]) for r in rows)
-        n_bound = 0
+        n_bound = n_unscoped = 0
         for name, status, src, n, detail in rows:
             line = f"  {name:<{w}}  {status:<13} {src:<20} {n:>10,} rows"
             if src in bound.get(name, ()) and status in ("complete", "partial"):
                 line += "  (role-visible only)"
                 n_bound += 1
+            if status == "complete" and DEPLOYMENT_WIDE_NOTE in (detail or ""):
+                # --scope could not apply to this extract
+                line += "  (not scoped)"
+                n_unscoped += 1
             if detail and status != "complete":
                 line += f"  — {detail[:100]}"
             typer.echo(line)
@@ -390,6 +395,11 @@ def report(
             "\nStatuses: complete/partial/unavailable/failed/not_requested. "
             "Missing evidence is never an observed zero — see meta.gaps."
         )
+        if n_unscoped:
+            typer.echo(
+                f"\nNOTE: {n_unscoped} extract(s) marked (not scoped) have no database "
+                "to scope by, so --scope did not narrow them: they cover the whole deployment."
+            )
         if n_bound:
             typer.echo(
                 f"\nWARNING: {n_bound} extract(s) marked (role-visible only) list "

@@ -63,6 +63,19 @@ def test_fake_adapter_satisfies_the_protocols():
     assert isinstance(FakeConnection(), Connection)
 
 
+def test_adapter_without_display_fields_still_matches_the_protocol():
+    """display_name and deployment_noun are optional, so an adapter written for
+    0.1.5 (without them) is still a SourceAdapter; publish falls back to its name."""
+
+    # ADAPTER as a 0.1.5 adapter would look: everything but the two new fields
+    keep = [a for a in dir(ADAPTER) if not a.startswith("_")
+            and a not in ("display_name", "deployment_noun")]
+    Legacy = type("Legacy", (), {a: getattr(ADAPTER, a) for a in keep})
+
+    assert not hasattr(Legacy(), "display_name")
+    assert isinstance(Legacy(), SourceAdapter)
+
+
 def test_registry_resolves_registered_and_builtin_and_rejects_unknown():
     assert get_adapter("fakewh") is ADAPTER
     assert get_adapter("FAKEWH") is ADAPTER
@@ -725,3 +738,51 @@ def test_unknown_reason_covers_extract_statuses(out_db):
         "SELECT count(*) FROM report.feature_inventory "
         "WHERE observation_status <> 'unknown' AND unknown_reason IS NOT NULL"
     ).fetchone()[0] == 0
+
+
+def test_visibility_bound_global_query_and_unscoped_extract_are_disclosed(out_db, tmp_path):
+    """A visibility-bound global query says so in its coverage, and an extract
+    with nothing to scope by says it was collected deployment-wide under --scope."""
+    import dataclasses
+
+    def bound(ex):
+        """The same extractor with its global query marked visibility-bound."""
+        if ex.name != "events":
+            return ex
+        return dataclasses.replace(ex, sources=(GlobalQuery(
+            "global/events.sql", "global", min_profile=Profile.STANDARD, visibility_bound=True),))
+
+    adapter = dataclasses.replace(ADAPTER, extractors=[bound(e) for e in ADAPTER.extractors])
+    scope = Scope.parse(["appdb"], adapter.scope)
+    coll = run_collection(out_db, adapter, FakeConnection(), profile=Profile.STANDARD, scope=scope)
+    st = runs(out_db, coll)
+    assert st["events"]["status"] == "complete"
+    assert "role-visibility bound" in st["events"]["error_detail"]
+    assert "collected deployment-wide" in st["events"]["error_detail"]
+    # an extract with scope columns was scoped in SQL: no deployment-wide note
+    assert "deployment-wide" not in (st["widget_sizes"]["error_detail"] or "")
+
+    # without --scope there is nothing to disclose about scope
+    other = open_output(str(tmp_path / "unscoped.duckdb"))
+    coll = run_collection(other, adapter, FakeConnection(), profile=Profile.STANDARD)
+    assert "deployment-wide" not in runs(other, coll)["events"]["error_detail"]
+    other.close()
+
+
+def test_cli_report_tags_extracts_scope_could_not_narrow(tmp_path):
+    """With --scope, a complete extract that has nothing to scope by is tagged (not scoped)."""
+    from typer.testing import CliRunner
+
+    from md_migration_assessment.cli import app
+
+    path = str(tmp_path / "scoped.duckdb")
+    con = open_output(path)
+    run_collection(con, ADAPTER, FakeConnection(), profile=Profile.STANDARD,
+                   scope=Scope.parse(["appdb"], ADAPTER.scope))
+    build_report(con)
+    con.close()
+    out = CliRunner().invoke(app, ["report", "--db", path]).output
+    line = lambda n: next(l for l in out.splitlines() if l.strip().startswith(n + " "))
+    assert "(not scoped)" in line("events")
+    assert "(not scoped)" not in line("widget_sizes")
+    assert "extract(s) marked (not scoped)" in out

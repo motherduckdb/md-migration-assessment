@@ -28,6 +28,7 @@ __all__ = [
 
 #: source kind -> dotted module path exposing an ``ADAPTER`` attribute
 _BUILTIN: dict[str, str] = {
+    "databricks": "md_migration_assessment.sources.databricks",
     "snowflake": "md_migration_assessment.sources.snowflake",
 }
 
